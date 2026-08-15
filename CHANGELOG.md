@@ -3,6 +3,37 @@
 Versioning: MAJOR.MINOR.PATCH. MAJOR changes the protocol's steps or verdict semantics; MINOR adds
 formulas, modules or functions; PATCH fixes correctness or presentation.
 
+## 1.4.0 — 2026-08-15
+
+### Added
+- `examples/demo_wheel_leap_pmcc.py` — the protocol applied end-to-end to a widely circulated
+  retail options claim: sell 30-day cash-secured puts 5% OTM, close at 50%, skim 30-50% of every
+  winning premium into a "LEAP fund", buy deep-ITM 18-24 month calls on TQQQ/SOXL, then sell
+  weekly 25-delta calls against them. Self-contained options engine (Black-Scholes, a stressable
+  IV surface anchored on VXN with term structure and skew, explicit commissions and half-spreads,
+  assignment, wheel completion, LEAP rolls, share splits).
+
+### Measured
+- **3x-ETF simulator validated before use** (protocol step 3): `3*r_QQQ - 1.25 bp/day` reproduces
+  real TQQQ over 16.5 years with residual sd 20.7 bp/day against a 386 bp/day underlying — R² 99.71%,
+  cumulative divergence 0.48%/yr. The 2.96 IV multiplier for the leveraged ETF is the measured
+  realized-vol ratio, not an assumption.
+- **The ablation is the finding.** Over 20 years the wheel alone returns 8.45% CAGR against 16.65%
+  for buy-and-hold QQQ. The full six-step system's headline 35.81% comes almost entirely from
+  recycling step-6 premium into an uncapped number of LEAP contracts (peak 1,721 held at once);
+  capped at 5 contracts it returns 11.58%, below the index.
+- **Step 6 has no measurable per-trade edge.** Across 894 weekly cycles the poor-man's-covered-call
+  earns $8.23 ± $7.26 per contract (t = 1.13, p = 0.26), skew −3.61, win rate 85% — the signature
+  of selling volatility, and the total sits inside the best-of-N search headroom.
+- **400 surrogate markets** (block bootstrap of (return, VXN) pairs, whole engine re-run per path):
+  the system beats buy-and-hold on CAGR 42.2% of the time, on drawdown 22.2%, and on **both — the
+  claim actually being made — 6.8%**.
+- **Net delta goes negative in fast rallies**: a 0.90-delta LEAP against a 0.25-delta weekly call is
+  net short the underlying after a ~30% move in the 3x ETF, i.e. short exactly the move the LEAP exists to capture.
+- **The 1-2% premium claim requires 30%+ IV**; mean VXN over the sample was 22.6%. Rebuilding the
+  underlying at 1.3x/1.6x/2.0x volatility raises the premium as promised and leaves wheel CAGR flat
+  while drawdown roughly doubles.
+
 ## 1.3.0 — 2026-07-26
 
 ### Added to `qdata.py`
