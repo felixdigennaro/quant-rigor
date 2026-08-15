@@ -25,6 +25,10 @@ One more example needs the network, because it is run on real history rather tha
 # the retail "wheel -> LEAP -> poor-man's-covered-call" flywheel, all six steps, 20 years of
 # QQQ/TQQQ/VXN, with the ablation that shows which step actually contributes anything
 python3 examples/demo_wheel_leap_pmcc.py --reps 400
+
+# cash-secured puts on 3x ETFs with a "red day + IV above 50%" entry filter: are those
+# filters edges, or rituals? and what does "$5,000 a week" actually require?
+python3 examples/demo_csp_leveraged_etf.py --reps 400
 ```
 
 The demo needs no data, no network and no packages. It generates a reproducible market, runs a
@@ -89,6 +93,7 @@ python3 scripts/qdata.py --symbol NQ=F
 | `tests/test_all.py` | 255 assertions vs **independent** references |
 | `examples/demo_strategy.py` | runnable end-to-end demo (single strategy) |
 | `examples/demo_portfolio.py` | runnable demo (multi-sleeve book, formulas 9-15) |
+| `examples/demo_csp_leveraged_etf.py` | the protocol applied to a second circulating claim: red-day + high-IV entry filters on SOXL/TQQQ puts, 50% profit take, full rotation (needs network) |
 | `examples/demo_wheel_leap_pmcc.py` | the protocol applied to a real circulating claim: cash-secured puts → LEAP fund → weekly PMCC. Options engine, validated 3x-ETF simulator, per-step ablation, 400 surrogate markets (needs network) |
 
 Every formula entry has the same four parts: the formula, **how it's used**, **how it lies**, and

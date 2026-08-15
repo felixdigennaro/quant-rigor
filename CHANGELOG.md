@@ -3,6 +3,38 @@
 Versioning: MAJOR.MINOR.PATCH. MAJOR changes the protocol's steps or verdict semantics; MINOR adds
 formulas, modules or functions; PATCH fixes correctness or presentation.
 
+## 1.5.0 — 2026-08-15
+
+### Added
+- `examples/demo_csp_leveraged_etf.py` — a second circulating retail claim through the protocol:
+  wait for a red day on SOXL/TQQQ, confirm IV > 50%, sell a 30-day cash-secured put, close at
+  50% of credit, rotate the full amount immediately, "3-4 times a month until a $5,000 week is
+  the standard". Reuses the engine, validated 3x simulator and IV surface from
+  `demo_wheel_leap_pmcc.py`.
+- `to_tradeable()` in `demo_wheel_leap_pmcc.py` — rebuilds a split-back-adjusted series at the
+  price level it was actually quoted at. Yahoo reads TQQQ at $0.22 in 2010; returns are right but
+  level is not, and level decides option tick size, the $0.01 bid-ask floor and contract notional.
+  Without this the real-TQQQ backtest is destroyed by a spread artefact rather than by the strategy.
+- `Config.entry_red_day`, `Config.entry_min_iv`, `Config.do_covered_call`, plus per-trade P&L and
+  holding-period logging in the engine.
+
+### Measured
+- **"IV above 50%" is not a filter on a 3x ETF.** TQQQ 30-day ATM IV is >= 50% on **84% of days**
+  (mean 67%, p5 45%). The threshold binds only in the calmest quarter of the sample — the quarter
+  with the smallest premiums. IV >= 80%, which binds on 21% of days, does select: +3.46% per trade
+  (t = 3.90) against +1.04% unfiltered.
+- **The red-day filter is refuted as an edge**: −0.526% per trade against no filter (t = −0.60),
+  and it lowers full-system CAGR from 13.60% to 12.73%. Selling after a down day buys higher IV and
+  a higher probability the underlying keeps falling; on a 3x ETF the two cancel.
+- **"$5,000/week"**: the claimed variant earns $372/week per $100k of collateral on average, so the
+  figure needs about **$1.35M of collateral** — and the same configuration draws down 69%.
+  Measured rotation rate is 1.5/month, not 3-4; mean holding period is 14.1 sessions.
+- **Assignment is the mechanism the claim omits.** On real TQQQ the position is assigned 22 times in
+  16.5 years and holds 3x shares for **31% of all sessions**, always after a fall: CAGR 1.21% against
+  42.82% for buy-and-hold TQQQ. Robust to the post-assignment rule (1.44% without covered calls).
+- **400 surrogate markets**: beats buy-and-hold QQQ on CAGR 24.8% of the time, on drawdown **0.8%**,
+  on **both 0.5%**. Median CAGR 10.1% vs 17.1%, median MaxDD −60.9% vs −33.4%.
+
 ## 1.4.0 — 2026-08-15
 
 ### Added

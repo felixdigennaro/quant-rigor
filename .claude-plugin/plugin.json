@@ -1,6 +1,6 @@
 {
   "name": "quant-rigor",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Rigorous quantitative analysis protocol for trading and investment strategies: 49 formulas with their failure modes, a measurability gate, a backtest checklist, an adversarial contrarian pass, overfitting diagnostics (DSR/PBO/HAC), portfolio risk decomposition, sizing constraints, Monte Carlo nulls (permutation, surrogates, White RC, SPA), charts, and a self-contained HTML report generator. Zero dependencies.",
   "keywords": [
     "quant",

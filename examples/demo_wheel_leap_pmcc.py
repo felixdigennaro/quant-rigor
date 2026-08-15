@@ -107,6 +107,29 @@ def synth_3x(r_index, drag, s0=50.0, split_at=150.0):
     return px, fac
 
 
+def to_tradeable(prices, s0=50.0, split_at=150.0):
+    """Rebuild a back-adjusted price series as the series that was actually QUOTED.
+
+    Yahoo returns split-back-adjusted closes, so TQQQ reads $0.22 in 2010 rather than the
+    ~$15 it actually traded at. Returns are right; price LEVEL is not, and level is what
+    decides option tick size, the $0.01 bid-ask floor and contract notional. Re-running the
+    returns forward from a realistic level with 2:1 splits restores all three, and treats a
+    real series exactly the way synth_3x() treats a simulated one.
+
+    Returns (prices, split_factor_per_day).
+    """
+    px, fac, s = [s0], [1.0], s0
+    for a, b in zip(prices, prices[1:]):
+        s *= max(1e-9, b / a) if a > 0 else 1.0
+        f = 1.0
+        while s > split_at:
+            s /= 2.0
+            f *= 2.0
+        px.append(s)
+        fac.append(f)
+    return px, fac
+
+
 # ----------------------------------------------------------------------------
 # 2. OPTION PRICING  (Black-Scholes + an explicit, stressable IV surface)
 # ----------------------------------------------------------------------------
@@ -213,9 +236,13 @@ class Config:
     put_otm = 0.05
     # step 3
     take_profit = 0.50          # close at 50% of credit
+    # optional entry filters (used by demo_csp_leveraged_etf.py)
+    entry_red_day = False       # only open after a down day in the underlying
+    entry_min_iv = 0.0          # only open when 30-day ATM IV is at least this
     # wheel completion (the carousel is silent on what happens after assignment)
     cc_otm = 0.05
     cc_dte = 30
+    do_covered_call = True      # False = after assignment just hold the shares until called
     # step 4
     skim = 0.40                 # midpoint of "30 to 50%"
     # step 5
@@ -259,7 +286,8 @@ class Engine:
                     "pmcc_breached": 0, "leaps_bought": 0, "leap_pnl": 0.0,
                     "commissions": 0.0, "spread_cost": 0.0, "skimmed": 0.0,
                     "pmcc_per_contract": [], "pmcc_credit_per_contract": [],
-                    "max_leaps_held": 0}
+                    "max_leaps_held": 0, "entry_days": 0, "hold_days": [],
+                    "put_pnl": [], "share_days": 0}
 
     # -- helpers ------------------------------------------------------------
     def _T(self, i, exp_idx):
@@ -315,11 +343,15 @@ class Engine:
                 self.cash -= 100 * p["n"] * p["K"]
                 self.shares += 100 * p["n"]
                 self.log["assignments"] += 1
+                self.log["hold_days"].append(i - p["opened"])
+                self.log["put_pnl"].append((p["credit"] - (p["K"] - S)) / p["K"])
             else:
                 debit = self.costs.fill(mid, +1)
                 self.log["spread_cost"] += 100 * p["n"] * (debit - mid)
                 self.cash -= 100 * p["n"] * debit + self._pay(p["n"])
                 gain = 100 * p["n"] * (p["credit"] - debit)
+                self.log["hold_days"].append(i - p["opened"])
+                self.log["put_pnl"].append((p["credit"] - debit) / p["K"])
                 if gain > 0 and c.do_skim:
                     take = c.skim * gain
                     self.cash -= take
@@ -329,6 +361,11 @@ class Engine:
             return
         if self.shares or i + c.put_dte >= len(self.dates):
             return                                        # in the covered-call leg, or no room
+        if c.entry_red_day and not (i > 0 and self.spot[i] < self.spot[i - 1]):
+            return
+        if c.entry_min_iv and self.su.atm(v, c.put_dte / YEAR) < c.entry_min_iv:
+            return
+        self.log["entry_days"] += 1
         K = S * (1.0 - c.put_otm)
         T = c.put_dte / YEAR
         mid = self.su.price(v, S, K, T, "p")
@@ -340,12 +377,15 @@ class Engine:
         self.cash += 100 * n * credit - self._pay(n)
         self.log["put_premium_pct"].append(credit / S)
         self.log["put_trades"] += 1
-        self.put = {"K": K, "exp": i + c.put_dte, "n": n, "credit": credit}
+        self.put = {"K": K, "exp": i + c.put_dte, "n": n, "credit": credit, "opened": i}
 
     def _wheel_call(self, i):
         """After assignment: sell covered calls until called away (wheel completion)."""
         c, S, v = self.cfg, self.spot[i], self.vxn[i]
         if not self.shares:
+            return
+        self.log["share_days"] += 1
+        if not c.do_covered_call and not self.call:
             return
         if self.call:
             cl = self.call
