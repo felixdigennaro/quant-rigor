@@ -1413,6 +1413,41 @@ else:
        _ties >= 1 and _null(_cg, "p") == (1 + _ties) / 201 and _gate2(_cg) is True,
        f"ties {_ties}, p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
 
+    # A score with period 5 on daily data under block 25, five trading weeks: every block
+    # shuffle keeps each P&L value on its weekday, the slope t of every draw equals the real
+    # one, and an effect of |t| 14 came back p 1.0, gate 2 False, NON USARE (the re-review's
+    # |t| 19.96 the same way, 2026-10-25). A null that ties the real on more than 5% of its
+    # draws cannot pass whatever the data: that is the caller's block. Under block 24 the
+    # same series passes at p 1/201. Replayed, a search that ranks the weekdays by their
+    # train-part mean rebuilds the same ranks on 191 of 200 block-25 shuffles (the blocks
+    # that cross the train cut move a few means): the same note, not the one that blames a
+    # builder for ignoring the P&L.
+    _wd = (_np.arange(2000) % 5).astype(float)
+    _g = _np.random.default_rng(77)
+    _wpn = 0.25 * (_wd - 2.0) + _g.normal(0, 1, 2000)
+    _cg = _gate(_wd, _wpn, preregistered=True, block=25)
+    ok("confluence_gate: a period-5 score under block 25 ties the real t on every draw: gate 2 is not run, with a note naming block",
+       _not_run(_cg, "pareggia") and _not_run(_cg, "block")
+       and _cg.get("verdict", "").startswith("NON DECIDIBILE"), str(_cg.get("search_null")))
+    _cg = _gate(_wd, _wpn, preregistered=True, block=24)
+    ok("confluence_gate: the same effect under block 24 passes gate 2",
+       _gate2(_cg) is True and _rule(_cg), f"p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
+
+    def _weekday_rank(masks, pnl):
+        wd = _np.arange(len(pnl)) % 5
+        means = _np.array([pnl[:1200][wd[:1200] == w].mean() for w in range(5)])
+        rank = _np.empty(5)
+        rank[_np.argsort(means)] = _np.arange(5)
+        return rank[wd]
+
+    _cg = _gate(_wd, _wpn, build_score=_weekday_rank, block=25)
+    ok("confluence_gate: a replayed weekday search under block 25 gets the tie note, not the one on a builder that ignores the P&L",
+       _not_run(_cg, "pareggia") and not _not_run(_cg, "preregistered=True"),
+       str(_cg.get("search_null")))
+    _cg = _gate(_wd, _wpn, build_score=_weekday_rank, block=24)
+    ok("confluence_gate: the same replayed search under block 24 passes gate 2",
+       _gate2(_cg) is True and _rule(_cg), f"p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
+
     # Gate 5 examines the bucket the sizing would weight UP: the top-score bucket on a rising
     # relation, the bottom-score bucket on a falling one. It examined the top bucket always,
     # and on a falling relation that bucket's negative total made top3_share negative and the

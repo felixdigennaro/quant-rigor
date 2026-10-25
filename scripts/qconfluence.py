@@ -38,7 +38,8 @@ THE FIVE GATES, in order. Each can kill the finding, and killing early saves the
      a null draw, and the gate keeps drawing until n_rep have one, within 10·n_rep. A score
      fixed before looking at the P&L keeps its score and shuffles only the P&L. Given
      neither the function nor that promise, the gate is not run and the verdict is NON
-     DECIDIBILE; so is it when too few shuffles find anything.
+     DECIDIBILE; so is it when too few shuffles find anything, or when the shuffle leaves
+     the score where it was relative to the P&L and the null only ties the real t.
 
   3. OUT-OF-SAMPLE.
      Select on the first part, apply frozen to the last part. No re-tuning, no second pick.
@@ -251,8 +252,9 @@ def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed)
     one, within 10·n_rep, and needs at least 19. Two-sided, by the permutation p-value
     (1 + #{|t_null| >= |t_real|}) / (1 + n_found) <= 0.05. Every way the gate cannot run
     gets its own note and None, never a verdict: a too-small n_rep, a NaN in the P&L, a
-    block longer than the series or too few shuffles on which the search finds anything are
-    failures of the call, not findings about the data.
+    block longer than the series, too few shuffles on which the search finds anything, or a
+    null that ties the real t on more than 5% of its draws are failures of the call, not
+    findings about the data.
     """
     def not_run(note):
         return None, {"note": "cancello 2 non eseguito: " + note}
@@ -333,7 +335,16 @@ def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed)
     a = np.abs(t_null)
     ar = abs(real)
     # A draw equal to the real counts as >=. The identity permutation ties it exactly in the
-    # mathematics and only up to a BLAS kernel's rounding in floating point.
+    # mathematics and only up to a BLAS kernel's rounding in floating point. A null that ties
+    # the real on more than 5% of its draws cannot pass whatever the data: a score with period
+    # 5 under block 25 keeps every P&L value on its weekday, and an effect of |t| 20 came back
+    # p 1.0 (2026-10-25). That is the caller's block, not a finding.
+    ties = int((np.abs(a - ar) <= 1e-9 * ar).sum())
+    if (1 + ties) / (1 + len(a)) > 0.05:
+        return not_run(f"il nullo pareggia il t reale su {ties} di {len(a)} estrazioni: la "
+                       f"permutazione a blocchi di {block} non muove il punteggio rispetto al "
+                       f"P&L (per esempio un punteggio periodico il cui periodo divide block), "
+                       f"e nessun dato può passare; cambiare block")
     if build_score is not None and same:
         return not_run("build_score restituisce lo stesso punteggio su ogni P&L permutato: "
                        "non dipende dal P&L, quindi non ripete la ricerca. Se il punteggio "
@@ -431,7 +442,9 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     bottom-score bucket, the one such a sizing would weight up. With neither `build_score`
     nor `preregistered` the gate is not run and the verdict is NON DECIDIBILE. `n_rep` must
     be at least 19 for the p-value to reach 0.05, and so must the shuffles on which the
-    search finds something.
+    search finds something; a null that ties the real t on more than 5% of its draws (a
+    periodic score whose period divides `block`) is not run either, with a note to change
+    `block`.
     """
     if build_score is not None and preregistered:
         raise ValueError("build_score and preregistered=True contradict each other: a score "
