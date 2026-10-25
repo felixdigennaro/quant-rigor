@@ -130,7 +130,7 @@ def dose_response(score, pnl, n_buckets=5, min_per_bucket=20):
 def _ranks(v):
     """Average ranks: tied values share one rank, as Spearman's rho is defined. A confluence
     count is almost always tied, and ordinal ranks broke the ties by position, which read low
-    (0.2479 against 0.2623 on a 0-3 count, 2026-10-25)."""
+    (CHANGELOG v1.6.2)."""
     _, inv, cnt = np.unique(np.asarray(v, float), return_inverse=True, return_counts=True)
     first = np.cumsum(cnt) - cnt
     return (first + (cnt - 1) / 2.0)[inv.ravel()]
@@ -271,6 +271,8 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
         # ignores the base strategy's own mean. Uncentred, a profitable base raised the bar and
         # a losing one lowered it (2026-10-25, 40 series per case: a real effect passed 0% of
         # the time at base mean 1.0, pure noise 100% at -0.3). Centred, neither moves it.
+        # Limits this null still has (a score the search built, broad rules, two-valued P&L,
+        # trends in time) are measured in CHANGELOG v1.6.2.
         nl = search_null(masks, pnl - pnl.mean(), n_rep=n_rep, min_n=min_n, seed=seed,
                          train=slice(0, cut))
         res["search_null"] = {k: v for k, v in nl.items() if k != "dist"}

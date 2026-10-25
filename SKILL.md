@@ -486,6 +486,10 @@ hypotheses with an economic mechanism over a wide automatic sweep.
    search, compare against that distribution's 95th percentile. `search_null` tests each rule's
    mean P&L against zero, so centre the P&L first, as `confluence_gate` does. Uncentred, a
    profitable base strategy raises the bar and a losing one lowers it, whatever the rule.
+   **Inside `confluence_gate` this null does not replay how the score was built.** If the score
+   came out of the search (say, how many of its best rules are on), pure noise passes gate 2
+   in 31 of 40 runs, and only gate 4 stops it. Never read gate 2 alone on a searched score;
+   CHANGELOG v1.6.2 lists this null's other measured limits.
 3. **Out-of-sample** — select on the first part, apply frozen to the rest. No re-tuning.
 4. **Independent replication** — same frozen rule, different instrument. In the measured case
    this is the gate that killed it, after gates 1-3 all passed.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """quant-rigor test suite. Run: python3 tests/test_all.py
 
-STDLIB ONLY, except one section that needs numpy: it runs when numpy is installed and is
-listed as SKIP when it is not. Exits 1 if any check fails.
+STDLIB ONLY, except three sections that need numpy (ndarray inputs, qconfluence, qregime): they
+run when numpy is installed and are listed as SKIP when it is not. Exits 1 if any check fails.
 
 Every numeric assertion is against an INDEPENDENT reference (published statistical tables,
 closed-form results, or analytically known values) — never against the library's own output.
@@ -1086,14 +1086,18 @@ else:
     ok("regime_switch: too short is not a verdict", QR.regime_switch(_x[:300], look=250).get("ok") is False)
 
     # The module's own power check: an edge confined to a quarter of the sample must come back
-    # real and identifiable in advance; pure noise must not.
+    # real and identifiable in advance.
     _vp = QR.validate_power()
     ok("validate_power: a regime-limited edge beats the block null (P2)", _vp["regime_edge"]["P2_more_than_chance"])
     ok("validate_power: and is identifiable in advance (P3)", _vp["regime_edge"]["P3_identifiable_ex_ante"])
-    ok("validate_power: pure noise does not beat the block null", not _vp["no_edge"]["P2_more_than_chance"])
-    ok("regime_report: the verdict follows P2 and P3",
-       _vp["regime_edge"]["verdict"].startswith("ROTAZIONE SOSTENUTA")
-       and not _vp["no_edge"]["verdict"].startswith(("ROTAZIONE", "REGIMI REALI")), _vp["no_edge"]["verdict"])
+    ok("regime_report: a real, identifiable regime reads ROTAZIONE SOSTENUTA",
+       _vp["regime_edge"]["verdict"].startswith("ROTAZIONE SOSTENUTA"), _vp["regime_edge"]["verdict"])
+    # Pure noise fires P2 by chance: two window scans at p < 0.05 make that ~10% by construction
+    # (3 of 40 streams, 2026-10-25), so one stream proves nothing either way. The check is the
+    # rate over 10 streams, against a bound that a 10% rate breaks about 2 times in 1000.
+    _fp = sum(QR.regime_report(_np.random.default_rng(500 + s).normal(0, 1000.0, 2800), n_null=100, seed=s)
+              ["P2_more_than_chance"] for s in range(10))
+    ok("regime_report: pure noise fires P2 in at most 4 of 10 streams", _fp <= 4, f"{_fp}/10")
 
 # ══════════════════════════════════ summary
 print(f"\n{'='*66}\nquant-rigor test suite\n{'='*66}")

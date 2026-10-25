@@ -2,10 +2,12 @@
 
 ## v1.6.2, check per qconfluence e qregime, e due difetti che hanno trovato (2026-10-25)
 
-Fino a qui nessun check toccava `qconfluence` e `qregime`. La suite ne ha 45 nuovi, tutti
-contro riferimenti indipendenti: forme chiuse calcolate nel test, effetti piantati nei dati, una
-scansione delle finestre rifatta con la sola libreria standard, il controllo di potenza del
-modulo. I due moduli importano numpy, quindi senza numpy le loro sezioni compaiono come `SKIP`.
+Fino a qui nessun check toccava `qconfluence` e `qregime`. La suite ne ha 45 nuovi. Quasi tutti
+confrontano con un riferimento indipendente: forme chiuse calcolate nel test, effetti piantati
+nei dati, una scansione delle finestre rifatta con la sola libreria standard. Quattro fanno
+girare il controllo di potenza del modulo (`validate_power`) e misurano quanto spesso scatta sul
+rumore puro, su 10 serie e non su una sola, perché su una serie scatta per caso circa una volta
+su dieci. I due moduli importano numpy, quindi senza numpy le loro sezioni compaiono come `SKIP`.
 Ogni check è stato provato rompendo il codice che copre: 36 mutazioni, tutte prese, e ognuno dei
 45 check diventa rosso sotto almeno una. La prima stesura ne aveva tre che non potevano scattare
 (un detector simmetrico, un conteggio uniforme su cui anche i quantili funzionano, un `KeyError`
@@ -15,14 +17,40 @@ che faceva crollare la suite prima del riepilogo); sono stati riscritti.
 Confrontava il t della pendenza, che non vede la media della strategia, con il nullo di
 `search_null`, che misura il t della media di ogni regola contro zero. Su 40 serie per riga, un
 effetto vero passava il cancello nello 0% dei casi con media base 1.0, e il rumore puro nel
-100% con media -0.3. Ora il cancello centra il P&L prima di chiamare `search_null`: l'effetto
-vero passa nel 100% dei casi con media 0, 0.375 e 1.0, il rumore nello 0% con 0, -0.3 e +0.3.
-`search_null` non cambia; la sua docstring e §5b dicono di centrare quando lo si usa da solo.
+100% con media -0.3. Ora il cancello centra il P&L prima di chiamare `search_null`. Con un
+punteggio fissato prima della ricerca, l'effetto vero passa nel 100% dei casi con media 0, 0.375
+e 1.0, il rumore nello 0% con 0, -0.3 e +0.3. `search_null` non cambia; la sua docstring e §5b
+dicono di centrare quando lo si usa da solo.
 
 ### Correzione: `_spearman` sui pareggi
-Usava ranghi ordinali, e un conteggio di confluenze è quasi tutto pareggi: su un conteggio 0-3
-dava 0.2479 contro 0.2623 del manuale. Ora usa i ranghi medi. Il campo è solo informativo,
-nessun cancello lo legge.
+Usava ranghi ordinali, e un conteggio di confluenze è quasi tutto pareggi. Sui 400 valori del
+check (conteggio 0-3 sbilanciato, seme 11) dava 0.1685 contro 0.1927 dei ranghi medi. Ora usa i
+ranghi medi. Il campo è solo informativo, nessun cancello lo legge.
+
+### Limiti noti del cancello 2, misurati e non riparati
+Centrare toglie la dipendenza dalla media della strategia base, non gli altri difetti di questo
+nullo. Tutti vengono dalla stessa premessa: il nullo misura il miglior t della media di una
+regola su un sottocampione, il cancello confronta il t della pendenza del punteggio sul campione
+intero. Misure del 2026-10-25, 40 serie per caso salvo dove indicato:
+- **Punteggio costruito dalla ricerca.** Senza effetto, punteggio = quante delle 3 regole migliori
+  su 200 (scelte sulla parte di addestramento) sono attive: il cancello 2 passa 31 volte su 40.
+  Il nullo non ripete la scelta. Lo ferma il cancello 4, e senza replica il verdetto resta NON
+  DECIDIBILE.
+- **Una regola larga.** La permutazione estrae la parte di addestramento senza reinserimento
+  dalla serie centrata, quindi il t del nullo si restringe di circa √(1−f). Senza effetto, con
+  una sola regola che copre il 25%, 50% o 75% dei periodi, il cancello 2 passa 2, 2 e 5 volte
+  su 40.
+- **P&L a due valori** (take profit e stop fissi) con regole di 30-36 periodi. Una regola
+  permutata può avere solo vincite, il suo errore standard tocca il pavimento di 1e-12 e il suo
+  t arriva a circa 1e12. Il 95° percentile del nullo ha mediana 9e11 e il cancello 2 passa 0
+  volte su 20 anche con un effetto piantato: potenza nulla.
+- **Andamenti nel tempo.** Un punteggio che sale col tempo e un P&L che deriva di 0.3 lungo il
+  campione, senza legame diretto fra i due: il cancello 2 passa 35 volte su 40. La permutazione
+  presume periodi scambiabili.
+
+Il rimedio di fondo è un nullo che permuta e ricalcola lo stesso t della pendenza, ripetendo la
+scelta del punteggio quando gli viene data. Cambia cosa significa il cancello, quindi è una
+decisione, non una correzione.
 
 ### Non toccato
 Il cancello 2 resta a una coda (`slope_t > q95`) mentre i cancelli 1, 3 e 4 accettano anche una
