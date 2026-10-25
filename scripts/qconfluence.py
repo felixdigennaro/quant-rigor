@@ -48,10 +48,15 @@ THE FIVE GATES, in order. Each can kill the finding, and killing early saves the
      Same frozen rule, different instrument. This is what killed the real case above.
 
   5. CONCENTRATION.
-     Does the effect live in 1-3 periods? Jackknife the bucket the sizing would weight UP
-     (top score when the slope rises, bottom score when it falls): it must make money,
-     keep its sign on every deletion, and not owe half its total to three periods. A
-     confluence that only works on three days is a story about three days.
+     Does the effect live in 1-3 periods, or in one stretch of time? Two tests, and both
+     must pass. The bucket the sizing would weight UP (top score when the slope rises,
+     bottom score when it falls) must make money, keep its sign on every deletion, and not
+     owe half its total to three periods. The slope itself is jackknifed too, because three
+     crash days in the bucket the sizing weights DOWN make a slope that the sized-up bucket
+     cannot see. The three periods that push the slope most must carry less than half of
+     its numerator, and deleting any one of 20 contiguous time blocks must leave at least
+     half of it, with the same sign. A confluence that only works on three days is a story
+     about three days.
 
 ONLY IF ALL FIVE PASS does sizing follow — and then the weight comes from the fitted slope,
 capped, never from the ratio of bucket means (which is unbounded and noisy at the extremes).
@@ -67,7 +72,7 @@ import math
 import numpy as np
 
 __all__ = ["dose_response", "search_null", "confluence_gate", "sizing_from_slope",
-           "sizing_cost", "jackknife_sign"]
+           "sizing_cost", "jackknife_sign", "jackknife_slope"]
 
 
 def _t(x):
@@ -376,6 +381,45 @@ def jackknife_sign(pnl, blocks=None):
             "top3_share": top3, "n_blocks": n_b}
 
 
+def jackknife_slope(score, pnl, blocks=20):
+    """Is the OLS slope of `pnl` on `score` spread over the sample, or carried by a few periods?
+
+    The slope's numerator is the sum of c_i = z_i (p_i - mean p), z the centred score.
+    `top3_share` is the part of it that the 3 largest c_i in its direction carry.
+    `block_min_ratio` is the smallest b_k / b over `blocks` contiguous time blocks, where b_k
+    is the slope with block k deleted and the means recomputed on what is kept. It is
+    negative when a deletion flips the sign, and NaN when a deletion leaves the score without
+    variance. Periods with a non-finite score or P&L are dropped, in time order. Fewer than 3
+    periods per block, or a numerator of exactly 0, is not a verdict.
+    """
+    s = np.asarray(score, float)
+    p = np.asarray(pnl, float)
+    m = np.isfinite(s) & np.isfinite(p)
+    s, p = s[m], p[m]
+    n = len(s)
+    if n < 3 * blocks:
+        return {"ok": False, "note": f"servono almeno {3 * blocks} periodi con punteggio e P&L "
+                                     f"finiti, 3 per blocco, e ce ne sono {n}"}
+    z = s - s.mean()
+    c = z * (p - p.mean())
+    num = float(c.sum())
+    if num == 0:
+        return {"ok": False, "note": "il numeratore della pendenza è esattamente 0, quindi non "
+                                     "c'è una pendenza da attribuire ai periodi"}
+    b = num / float(z @ z)
+    ratios = []
+    for blk in np.array_split(np.arange(n), blocks):
+        keep = np.ones(n, bool)
+        keep[blk] = False
+        zk = s[keep] - s[keep].mean()
+        szz = float(zk @ zk)
+        ratios.append(float(zk @ (p[keep] - p[keep].mean())) / szz / b if szz > 0
+                      else float("nan"))
+    return {"ok": True, "top3_share": float(np.sort(math.copysign(1.0, num) * c)[-3:].sum()
+                                            / abs(num)),
+            "block_min_ratio": float(np.min(ratios)), "n_blocks": blocks}
+
+
 # ---------------------------------------------------------------- sizing
 
 
@@ -438,6 +482,15 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     search finds something; a null that ties the real t on more than 5% of its draws (a
     periodic score whose period divides `block`) is not run either, with a note to change
     `block`.
+
+    Gate 5 passes only if the bucket the sizing would weight up makes money and passes
+    `jackknife_sign` (sign kept on every deletion, top-3 share < 0.5), and the slope passes
+    `jackknife_slope` on the periods with a finite score and P&L. The slope's 3 largest
+    contributions must carry less than half of its numerator, and deleting any one of 20
+    contiguous time blocks must leave at least half of it, with the same sign.
+    `res["concentration"]` carries both tests, the slope's as `slope_top3_share`,
+    `slope_block_min_ratio` and `slope_blocks`. Gate 5 is not run without a dose-response
+    slope, with fewer than 60 finite periods, or with a slope numerator of exactly 0.
     """
     if build_score is not None and preregistered:
         raise ValueError("build_score and preregistered=True contradict each other: a score "
@@ -478,10 +531,14 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     # total made top3_share negative and the gate trivially true: gains living in 3 periods
     # passed 10 of 10 datasets (2026-10-25).
     slope = dr.get("slope_per_sd", float("nan"))
+    js = jackknife_slope(score, pnl)
     if slope != slope:
         res["concentration"] = {"ok": False, "note": "senza una pendenza dose-risposta non si "
                                                      "sa quale bucket il dimensionamento "
                                                      "peserebbe di più"}
+        res["gates"]["5_not_concentrated"] = None
+    elif not js["ok"]:
+        res["concentration"] = {"ok": False, "note": js["note"]}
         res["gates"]["5_not_concentrated"] = None
     else:
         fs = score[np.isfinite(score)]
@@ -493,11 +550,22 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
         v = v[np.isfinite(v)]
         jk = jackknife_sign(v)
         jk.update({"bucket": side, "bucket_n": int(len(v)),
-                   "bucket_mean": float(v.mean()) if len(v) else float("nan")})
+                   "bucket_mean": float(v.mean()) if len(v) else float("nan"),
+                   "slope_top3_share": js["top3_share"],
+                   "slope_block_min_ratio": js["block_min_ratio"],
+                   "slope_blocks": js["n_blocks"]})
         res["concentration"] = jk
-        res["gates"]["5_not_concentrated"] = bool(jk.get("ok") and jk["bucket_mean"] > 0
-                                                  and jk["sign_survives_all"]
-                                                  and jk["top3_share"] < 0.5)
+        bucket_ok = bool(jk.get("ok") and jk["bucket_mean"] > 0
+                         and jk["sign_survives_all"]
+                         and jk["top3_share"] < 0.5)
+        # The bucket test sees only the bucket the sizing weights up. Three crash days of -60
+        # in the bucket it weights DOWN made the slope while the sized-up bucket looked clean,
+        # and the bucket test passed 198 of 200 such datasets. It passed 180 of 200 with the
+        # whole effect in one 100-period window. With the slope test, UTILIZZABILE fell from
+        # 63, 65 (score negated) and 13 of 200 to 0, and stayed the same on 7 clean fixtures
+        # of 200 (2026-10-25).
+        slope_ok = js["top3_share"] < 0.5 and js["block_min_ratio"] >= 0.5
+        res["gates"]["5_not_concentrated"] = bool(bucket_ok and slope_ok)
 
     passed = [v for v in res["gates"].values() if v is True]
     failed = [k for k, v in res["gates"].items() if v is False]
