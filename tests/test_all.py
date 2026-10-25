@@ -1102,10 +1102,10 @@ else:
     # One NaN in the P&L used to come back as a degenerate null blamed on variance or block.
     _cg = _gate(_np.full(2000, 2.0), _pn, preregistered=True)
     ok("confluence_gate: a constant score leaves gate 2 not run, with a note on variance",
-       _not_run(_cg, "varianza"), str(_cg.get("search_null")))
+       _not_run(_cg, "senza varianza"), str(_cg.get("search_null")))
     _cg = _gate(_sc, _np.full(2000, 1.0), preregistered=True)
     ok("confluence_gate: a constant P&L leaves gate 2 not run, with a note on variance",
-       _not_run(_cg, "varianza"), str(_cg.get("search_null")))
+       _not_run(_cg, "senza varianza"), str(_cg.get("search_null")))
     _cg = _gate(_sc, _pn, preregistered=True, block=5000)
     ok("confluence_gate: a block longer than the series makes one block, so gate 2 is not run",
        _not_run(_cg, "blocchi"), str(_cg.get("search_null")))
@@ -1233,6 +1233,24 @@ else:
     ok("confluence_gate: a builder that centres in place leaves the caller's P&L as it was",
        _np.array_equal(_pn, _was) and _gate2(_cg) is True,
        f"mean before {_was.mean():.3f}, after {_pn.mean():.3f}, gate {_gate2(_cg)}")
+    # Centring leaves the slope t unchanged, so it cannot tell whether each SHUFFLE was
+    # copied too: a builder that clips its argument in place must get the same null as the
+    # pure builder that clips a copy (without copies the draws differ by up to 1.6).
+    def _clipping(masks, pnl):
+        pnl[:] = _np.minimum(pnl, 0.0)
+        return _search3(masks, pnl)
+
+    def _clipped(masks, pnl):
+        return _search3(masks, _np.minimum(pnl, 0.0))
+
+    _mk, _pn, _ = _searched(330, 0.3)
+    _sc = _clipped(_mk, _pn)
+    _a = _gate(_sc, _pn, masks=_mk, build_score=_clipping, n_rep=100)
+    _b = _gate(_sc, _pn, masks=_mk, build_score=_clipped, n_rep=100)
+    ok("confluence_gate: a builder that clips its P&L argument in place gets the same null as the pure builder, so every shuffle's t is computed on the untouched shuffle",
+       _gate2(_a) is not None and _np.array_equal(_a.get("search_null", {}).get("null_abs_t", [0.0]),
+                                                  _b.get("search_null", {}).get("null_abs_t", [1.0])),
+       f"p {_null(_a, 'p')} vs {_null(_b, 'p')}")
 
     # A threshold search: the score counts the rules whose on-vs-off t on the train part is
     # above 3. On shuffled noise it mostly finds nothing, the rebuilt score is constant and
@@ -1288,7 +1306,10 @@ else:
     # planted effect above every draw has p = 1/20 and passes. On noise seed 406 one draw of
     # 29 reaches the real: p = 2/30 fails, where a bar at the 93rd percentile of the draws
     # would pass. With 2 blocks the null has two permutations, and the identity, which ties
-    # the real exactly, is about half the draws: a tie counts as >= and the gate cannot pass.
+    # the real in exact arithmetic, is about half the draws: a tie counts as >= and the gate
+    # cannot pass. In floating point the batch kernel rounds the identity rows one ulp below
+    # the single-row real on seed 5 (101 of 101 rows, 2026-10-25), so the tie needs the
+    # module's tolerance: with exact equality the identity vanishes and p would be 1/201.
     _sc, _pn = _book(1, 0.25, 1.0)[:2]
     _cg = _gate(_sc, _pn, preregistered=True, n_rep=19)
     ok("confluence_gate: n_rep=19 with the real above every draw is p = 0.05 exactly, which passes",
@@ -1298,7 +1319,7 @@ else:
     ok("confluence_gate: one draw of 29 at or above the real is p = 2/30, which fails",
        _null(_cg, "p") == 2 / 30 and _gate2(_cg) is False and _rule(_cg),
        f"p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
-    _cg = _gate(_sc, _pn, preregistered=True, block=1000)
+    _cg = _gate(*_book(5, 0.25, 1.0)[:2], preregistered=True, block=1000)
     _real = _null(_cg, "real_abs_t")
     _ties = sum(abs(float(v) - _real) <= 1e-9 * _real
                 for v in _cg.get("search_null", {}).get("null_abs_t", []))
@@ -1312,7 +1333,8 @@ else:
     # gate trivially true: a sized-up setup whose gains lived in 3 periods passed 49 of 50
     # (lead's measurement, 2026-10-25). It also passes only if that bucket makes money. The
     # fixtures put a falling 0.1-per-level relation on noise of sd 0.1 and rewrite the
-    # score-0 bucket, whose 3 gains of 10 sit in 3 different jackknife blocks.
+    # score-0 bucket: 3 gains of 10 in 3 different jackknife blocks, or 20 gains of 0.2
+    # inside one block (periods 135-154 of its 523, block 5 of 20), or gains spread evenly.
     def _falling(seed, bucket0):
         g = _np.random.default_rng(seed)
         sc = g.integers(0, 4, 2000).astype(float)
@@ -1321,6 +1343,9 @@ else:
         if bucket0 == "three gains":
             pn[low] = 0.02 + g.normal(0, 0.1, low.sum())
             pn[_np.flatnonzero(low)[[5, 200, 400]]] = 10.0
+        elif bucket0 == "one block":
+            pn[low] = -0.002 + g.normal(0, 0.02, low.sum())
+            pn[_np.flatnonzero(low)[135:155]] += 0.2
         elif bucket0 == "spread gains":
             pn[low] = 0.2 + g.normal(0, 0.1, low.sum())
         elif bucket0 == "all buckets lose":
@@ -1336,6 +1361,12 @@ else:
        _gate5(_cg) is False and _c.get("bucket") == "bottom" and _c.get("bucket_mean", 0.0) > 0
        and _c.get("sign_survives_all") is True and _c.get("top3_share", 0.0) >= 0.5,
        f"gate {_gate5(_cg)}, bucket {_c.get('bucket')}, mean {_c.get('bucket_mean')}, top3 {_c.get('top3_share')}")
+    _cg = _gate(*_falling(5, "one block"), preregistered=True)
+    _c = _cg.get("concentration", {})
+    ok("confluence_gate: a sized-up bucket whose mean one jackknife block carries fails gate 5 with top3_share below 0.5",
+       _gate5(_cg) is False and _c.get("bucket") == "bottom" and _c.get("bucket_mean", 0.0) > 0
+       and _c.get("sign_survives_all") is False and _c.get("top3_share", 1.0) < 0.5,
+       f"gate {_gate5(_cg)}, bucket {_c.get('bucket')}, mean {_c.get('bucket_mean')}, worst {_c.get('worst_mean')}, top3 {_c.get('top3_share')}")
     _cg = _gate(*_falling(5, "spread gains"), preregistered=True)
     _c = _cg.get("concentration", {})
     ok("confluence_gate: the same relation with the gains spread passes gate 5 on the bottom bucket",
