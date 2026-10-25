@@ -484,21 +484,32 @@ hypotheses with an economic mechanism over a wide automatic sweep.
    harder. It is also the only shape that answers the sizing question — you need the **slope**,
    not one bucket's mean.
 2. **Null calibration of the search** — shuffle the P&L, re-run the *entire* search, compare
-   against that distribution's 95th percentile. `confluence_gate` does it literally: pass
-   `build_score(masks, pnl) -> score`, the function that built your score, and gate 2 shuffles
-   the P&L in blocks of 25 periods (`block`), rebuilds the score from each shuffle and
-   recomputes the same slope t, two-sided. A score fixed before looking at this P&L takes
+   against what that produces. `confluence_gate` does it literally: pass
+   `build_score(masks, pnl) -> score`, the function that built your score, with **every** step
+   that looked at the P&L inside it (a shortlist frozen outside it is not replayed, and noise
+   then passes about 69% of the time). Gate 2 shuffles the P&L in blocks of 25 periods
+   (`block`), rebuilds the score on copies, recomputes the same HC3-studentised slope t and
+   passes on the two-sided permutation p-value ≤ 0.05; shuffles on which the search finds
+   nothing stay out of the null. A score fixed before looking at this P&L takes
    `preregistered=True` instead. With neither, gate 2 is not run: the masks alone cannot say
    how a score was built from them. Measured on 200 datasets per shape, noise passes it
-   between 3.5% and 7% of the time whatever the base mean, the rules' coverage, a two-valued
-   P&L or persistence in the data. **A trend that score and P&L share still passes it** (188
-   of 200): no shuffle can tell a shared trend from an edge, so gates 3 and 4 have to.
-   `search_null` remains as a standalone tool; it tests each rule's mean P&L against zero, so
-   centre the P&L before using it on its own.
+   between 3% and 8% of the time whatever the base mean, the rules' coverage, a two-valued
+   P&L or a variance that grows with the score. **Make `block` cover the P&L's memory**:
+   60-period overlapping forward returns pass noise 34 times in 200 with blocks of 25 and 12
+   with blocks of 100. **A trend that score and P&L share still passes it** (188 of 200): no
+   shuffle can tell a shared trend from an edge, so gates 3 and 4 have to. A heavy-tailed
+   score (lognormal) let noise pass 82 times in 1000; its ranks, 44. `search_null` remains as
+   a standalone tool; it tests each rule's mean P&L against zero, so centre the P&L before
+   using it on its own.
 3. **Out-of-sample** — select on the first part, apply frozen to the rest. No re-tuning.
 4. **Independent replication** — same frozen rule, different instrument. In the measured case
    this is the gate that killed it, after gates 1-3 all passed.
-5. **Concentration** — jackknife. An effect living in three periods is a story about three periods.
+5. **Concentration** — jackknife the bucket the sizing would weight **up**: the top scores when
+   the slope rises, the bottom ones when it falls. It must make money, keep its sign on every
+   deletion and not owe half its total to three periods: an effect living in three periods is
+   a story about three periods. It does not see a slope that a few periods make in the
+   *other* bucket (three crash days in the down-weighted bucket: UTILIZZABILE 33 times in 100,
+   measured by an independent review); jackknifing the slope itself is the open fix.
 
 A gate **not executed** is not a gate passed: `confluence_gate` returns NON DECIDIBILE, never a
 positive, when replication is missing, or when gate 2 has neither `build_score` nor

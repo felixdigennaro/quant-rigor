@@ -1,67 +1,110 @@
 # Changelog
 
-## v2.0.0, il cancello 2 rifà la ricerca (2026-10-25)
+## v2.0.0, i cancelli 2 e 5 rifatti (2026-10-25)
 
-**Cambio che rompe.** Il cancello 2 di `confluence_gate` non gira più con le sole maschere:
-serve `build_score(masks, pnl)`, la funzione che ha costruito il punteggio, oppure
-`preregistered=True` se il punteggio era fissato prima di guardare questo P&L. Senza nessuno dei
-due il cancello 2 non è eseguito e il verdetto è NON DECIDIBILE, come per ogni cancello non
-eseguito. `build_score` insieme a `preregistered=True` solleva `ValueError`. Il parametro
-`min_n` di `confluence_gate` sparisce: serviva solo a `search_null`, che resta com'era.
+**Cambi che rompono.**
+- Il cancello 2 di `confluence_gate` non gira più con le sole maschere. Serve
+  `build_score(masks, pnl)`, la funzione che ha costruito il punteggio, oppure
+  `preregistered=True` se il punteggio era fissato prima di guardare questo P&L. Senza nessuno
+  dei due il cancello 2 non è eseguito e il verdetto è NON DECIDIBILE; i due insieme sollevano
+  `ValueError`.
+- `min_n` sparisce dalla firma di `confluence_gate`: serviva solo a `search_null`, che resta
+  com'era.
+- `res["search_null"]` cambia forma. Non ha più `ok`, `max` e `n_rules`; `q95` e `median` sono
+  quantili di |t| del nullo. Si aggiungono `method`, `two_sided`, `block`, `n_rep`,
+  `real_abs_t`, `p`, `null_abs_t` (un array numpy) e, con `build_score`, `n_drawn` e
+  `n_rebuilt_constant`.
+- Il cancello 5 esamina il bucket in basso quando la relazione scende e boccia un bucket che
+  perde soldi. `res["concentration"]` aggiunge `bucket`, `bucket_n` e `bucket_mean`.
 
-### Il nuovo nullo
-- **Rifà la ricerca.** Mescola il P&L, chiama `build_score` sul P&L mescolato e ricalcola lo
-  stesso t della pendenza che misura sul punteggio vero. Prima confrontava il t della pendenza
-  con il miglior t della media di una regola: due statistiche diverse, da cui venivano i quattro
-  limiti misurati nella v1.6.2.
-- **Controlla la funzione.** Se `build_score(masks, pnl)` non ricostruisce il punteggio dato, il
-  cancello 2 non è eseguito: il nullo ripeterebbe una ricerca diversa.
-- **A due code.** Passa se |t| supera il 95° percentile di |t| del nullo, quindi passa anche una
-  confluenza che peggiora il P&L, come già i cancelli 1, 3 e 4.
-- **A blocchi.** Mescola blocchi di 25 periodi; `block=1` mescola i singoli periodi. Con i
-  blocchi il nullo segue la persistenza di ogni serie. Su rumore indipendente resta |t(n-2)|:
-  su 10 serie con 1000 estrazioni la mediana di |t| va da 0.638 a 0.707 e il 95° percentile da
-  1.806 a 2.136, contro 0.674 e 1.961 (con `block=1`: da 0.622 a 0.732 e da 1.839 a 2.072).
-- **Nullo degenere.** Se meno di metà delle estrazioni danno un t finito e distinto (punteggio o
-  P&L costanti, o un blocco lungo quanto la serie), il cancello 2 non è eseguito invece di
-  bocciare in silenzio.
-- `build_score` gira `n_rep` volte: una ricerca su migliaia di regole costa secondi a chiamata.
+### Il cancello 2
+- **Rifà la ricerca.** Mescola il P&L a blocchi, chiama `build_score` su copie del P&L mescolato
+  e delle maschere, e ricalcola lo stesso t. Il punteggio vero deve essere quello che
+  `build_score(masks, pnl)` ricostruisce. Una funzione che restituisce lo stesso punteggio su
+  ogni P&L mescolato non dipende dal P&L, quindi non rifà la ricerca: il cancello non gira e la
+  nota rimanda a `preregistered=True`.
+- **Un t robusto.** La pendenza è studentizzata con l'errore standard HC3 (DiCiccio e Romano
+  2017). Con il t OLS, rumore la cui varianza cresce col punteggio passava 78 volte su 400; con
+  HC3 23.
+- **Un p-value esatto, a due code.** Passa se (1 + #{|t nullo| ≥ |t reale|}) / (1 + n) ≤ 0.05.
+  Il confronto con il 95° percentile interpolato era troppo largo con poche estrazioni (il 9.2%
+  del rumore con 20, misura della revisione indipendente). Sotto 19 estrazioni il p-value non
+  può arrivare a 0.05 e il cancello non gira. A due code, una confluenza che peggiora il P&L
+  può passare, come già nei cancelli 1, 3 e 4.
+- **Solo le estrazioni in cui la ricerca trova qualcosa.** Su un P&L mescolato una ricerca a
+  soglia spesso non trova niente. Quelle estrazioni non entrano nel nullo: il cancello ne
+  estrae finché `n_rep` trovano qualcosa, entro 10·`n_rep`, e ne vuole almeno 19. Contarle come
+  |t| = 0 faceva passare il rumore proprio nei dataset in cui la ricerca vera aveva trovato
+  qualcosa, cioè gli unici su cui qualcuno esegue il cancello. Con lo script della revisione
+  indipendente e la ricerca a soglia della suite, il rumore passava il 9.6%, il 38.6% e il
+  100% delle esecuzioni a soglia 2.5, 3 e 3.5; sul codice finale il 3.9%, il 4.0% e il 5.2%.
+- **Blocchi.** Mescola blocchi di 25 periodi (`block`); `block=1` mescola i singoli periodi. Se
+  più del 5% delle estrazioni pareggia il t reale il cancello non può passare qualunque siano
+  i dati, quindi non gira. Succede con 2 o 3 blocchi, dove la serie stessa è una permutazione
+  su 2 o su 6, e con un punteggio periodico il cui periodo divide `block`: il giorno della
+  settimana con blocchi di 25 giorni dava p 1.0 e NON USARE su un effetto con |t| 20.
+- Valori non finiti, punteggio o P&L costanti, un t non definito: il cancello non gira, con
+  una nota che dice quale dei casi è.
+
+### Il cancello 5
+Esaminava sempre il bucket col punteggio più alto. Con il cancello 2 a due code una relazione
+che scende ci arrivava, e il cancello 5 esaminava il bucket peggiore: col suo totale negativo
+`top3_share` usciva negativo e il cancello passava sempre. Sugli stessi dati, con i guadagni
+del setup migliore concentrati in 3 periodi, il verdetto era UTILIZZABILE 0 volte su 50 col
+punteggio che sale e 49 su 50 col punteggio rovesciato; ora 0 su 50 in entrambi i versi.
+Esamina il bucket in alto se la pendenza sale e quello in basso se scende. Quel bucket deve guadagnare (media > 0), restare
+dello stesso segno a ogni cancellazione e non dovere metà del totale a tre periodi. Così
+boccia anche una strategia che perde in ogni bucket, che prima poteva passare.
 
 ### Misurato
 Passaggi del cancello 2 su 200 serie per riga, con 200 permutazioni e il `confluence_gate` vero
-delle due versioni. Il rumore dovrebbe passare 10 volte su 200 (5%).
+delle due versioni. Il rumore dovrebbe passare 10 volte su 200.
 
 | forma | caso | v1.6.2 | v2.0.0 |
 |---|---|---|---|
-| punteggio 0-3 fissato prima | rumore, media base 0 / 1.0 / -0.3 | 3 / 3 / 3 | 10 / 10 / 10 |
-| punteggio 0-3 fissato prima | effetto +0.06 | 161 | 168 |
-| punteggio 0-3 fissato prima | effetto -0.06 (la confluenza peggiora) | 0 | 174 |
-| 3 regole migliori su 200, cercate | rumore, media base 0 / 1.0 / -0.3 | 152 / 78 / 142 | 13 / 14 / 12 |
-| 3 regole migliori su 200, cercate | effetto 0.15 sulle 3 regole | 195 | 146 |
-| una regola che copre 25% / 50% / 75% | rumore | 8 / 14 / 19 | 8 / 8 / 8 |
-| una regola che copre 50% | effetto 0.12 | 164 | 133 |
-| P&L a due valori | rumore | 0 | 7 |
-| P&L a due valori | effetto 0.25 | 0 | 178 |
-| P&L e punteggio persistenti | rumore | 26 | 9 |
-| P&L e punteggio persistenti | effetto 0.1 | 192 | 153 |
+| punteggio 0-3 fissato prima | rumore | 3 | 9 |
+| punteggio 0-3 fissato prima | effetto +0.06 / -0.06 (la confluenza peggiora) | 161 / 0 | 165 / 171 |
+| 3 regole migliori su 200, cercate | rumore, media base 0 / 1.0 / -0.3 | 152 / 78 / 142 | 14 / 16 / 13 |
+| 3 regole migliori su 200, cercate | effetto 0.15 sulle 3 regole | 195 | 140 |
+| una regola che copre 25% / 50% / 75% | rumore | 8 / 14 / 19 | 6 / 6 / 6 |
+| una regola che copre 50% | effetto 0.12 | 164 | 130 |
+| P&L a due valori | rumore / effetto 0.25 | 0 / 0 | 6 / 176 |
+| P&L e punteggio persistenti | rumore / effetto 0.1 | 26 / 192 | 7 / 150 |
+| varianza che cresce col punteggio | rumore / effetto 0.1 | 11 / 146 | 10 / 120 |
+| rendimenti futuri sovrapposti, 20 periodi | rumore, block 25 / 100 | 39 | 22 / 14 |
+| rendimenti futuri sovrapposti, 60 periodi | rumore, block 25 / 100 | 60 | 34 / 12 |
 | andamento comune nel tempo | rumore | 185 | 188 |
 
-Dove la v2.0.0 passa meno effetti veri, la v1.6.2 li passava insieme al rumore: dal 39% al 76%
-del rumore sul punteggio cercato, il 13% sulle serie persistenti. Le due code costano qualche
-punto sugli effetti che salgono (168 contro 183 a una coda, misurato sul prototipo).
+Il punteggio fissato prima è una riga sola perché il t della pendenza non vede la media della
+strategia base. Dove la v2.0.0 passa meno effetti veri, la v1.6.2 li passava insieme al rumore
+(fino al 76% sul punteggio cercato, il 13% sulle serie persistenti), oppure la v2.0.0 paga le
+due code e l'errore standard robusto. Sul punteggio cercato il test è esatto: la revisione
+indipendente misura 5.15% ± 0.55 su 6000 serie, con p-value uniformi.
 
-### Limite che resta
-Un andamento nel tempo comune a punteggio e P&L passa il cancello 2 in 188 casi su 200: nessun
-rimescolamento distingue un andamento condiviso da un effetto. Togliere l'andamento a entrambi
-porta il rumore al 6%, ma cambia la domanda e toglie potenza (145 contro 200 su un effetto vero
-che sale col tempo, misurato sul prototipo), quindi non è stato fatto. Questo caso lo devono
-fermare i cancelli 3 e 4.
+### Limiti che restano
+- **Una memoria del P&L più lunga del blocco.** Con rendimenti futuri sovrapposti su 60 periodi
+  il rumore passa 34 volte su 200 con blocchi di 25 e 12 con blocchi di 100. Il blocco deve
+  coprire la memoria del P&L, almeno l'orizzonte dei rendimenti sovrapposti.
+- **Un andamento nel tempo comune a punteggio e P&L** passa in 188 casi su 200: nessun
+  rimescolamento lo distingue da un effetto. Lo devono fermare i cancelli 3 e 4.
+- **Una ricerca rifatta a metà.** `build_score` deve contenere ogni passo che ha guardato il
+  P&L. Con una lista corta di 10 regole su 200 fissata sul P&L vero e solo la scelta delle 3
+  rifatta, il rumore passa il 69% delle volte, contro il 4.75% rifacendo entrambi i passi
+  (misura della revisione indipendente). Il codice non può accorgersene.
+- **Un punteggio a code pesanti con varianza che cresce col punteggio.** HC3 non basta: con un
+  punteggio lognormale il rumore passa 82 volte su 1000. Passando i ranghi del punteggio,
+  44 su 1000.
+- **Il cancello 5 guarda un bucket, non la pendenza.** Una pendenza dovuta a pochi periodi
+  nell'altro bucket gli sfugge: tre crolli di -60 nel bucket che il dimensionamento pesa di
+  meno portano il verdetto a UTILIZZABILE 33 volte su 100, contro 5 senza crolli (misura della
+  revisione indipendente). Il rimedio proposto, il jackknife della pendenza invece che di un
+  bucket, non è stato fatto.
+- **Costo.** `build_score` gira fino a 10·`n_rep` volte, e `null_abs_t` e la matrice delle
+  permutazioni crescono con `n_rep` × n.
 
 ### Check
-La suite passa da 424 a 437 check: ripetizione della ricerca, punteggio fissato, nessuno dei
-due, funzione che non ricostruisce il punteggio, conflitto fra i due, due code, blocchi, nullo
-degenere, il t reale contro un OLS scritto a mano, la forma del nullo su rumore indipendente
-contro |t(1998)|. 13 mutazioni del codice nuovo rendono rossa la suite, nessuna sopravvive.
+La suite passa da 424 a 471 check. 48 mutazioni del codice nuovo rendono rossa la suite,
+nessuna sopravvive.
 
 ## v1.6.2, check per qconfluence e qregime, e due difetti che hanno trovato (2026-10-25)
 
