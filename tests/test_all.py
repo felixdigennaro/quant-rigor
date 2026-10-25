@@ -888,14 +888,15 @@ ok("verdict: un criterio rotto non passa in silenzio",
 # due fette hanno lunghezza diversa esplode — ed e' il caso fortunato. Quando hanno la stessa
 # lunghezza (o una delle due e' lunga 1, e allora numpy trasmette) somma i numeri e restituisce
 # una banda plausibile e SBAGLIATA, senza alcun errore. Il tipo dichiarato non cambia mai.
-# The scripts this suite covers need only the stdlib, so without numpy this section is a
-# SKIP, not a crash that hides every result above it.
+# This section and the qconfluence and qregime ones need numpy; everything above needs only
+# the stdlib. Without numpy they are SKIPs, not a crash that hides every result above them.
 try:
     import numpy as _np
 except ImportError as e:
-    _np = None
-    SKIP.append(f"ndarray attraversa il confine lista (R13): {e}")
-if _np is not None:
+    _np, _no_np = None, str(e)
+if _np is None:
+    SKIP.append(f"ndarray attraversa il confine lista (R13): {_no_np}")
+else:
     _arr = _np.array([1.0, -2.0, 3.0, -1.0, 2.0, 0.5, -0.5, 1.5, -1.5, 2.5])
     _lst = [float(v) for v in _arr]
     _ba = S.bootstrap(_arr, stat=_np.mean, reps=200, seed=3, block=4)
@@ -912,6 +913,184 @@ if _np is not None:
     _ma = QMC.surrogate_paths(_arr, model="block_bootstrap", block=4, reps=100, seed=3, drift_zero=False)
     ok("surrogate_paths: block_bootstrap con drift_zero=False su ndarray non esplode",
        isinstance(_ma, dict))
+
+
+# ══════════════════════════════════ qconfluence: the five gates (§5b)
+# References are closed forms computed here or effects planted in the data, never the
+# module's own output.
+if _np is None:
+    SKIP.append(f"qconfluence: {_no_np}")
+else:
+    import statistics as _st
+    import qconfluence as QF
+
+    close("sizing_cost: 1x/3x on a coin flip = 2/sqrt(5)",
+          QF.sizing_cost([1.0, 3.0] * 50), 2 / math.sqrt(5), 1e-12)
+    close("sizing_cost: 3x a quarter of the time = 1.5/sqrt(3)",
+          QF.sizing_cost([3.0, 1.0, 1.0, 1.0] * 25), 1.5 / math.sqrt(3), 1e-12)
+    close("sizing_cost: equal weights cost nothing", QF.sizing_cost([2.0] * 10), 1.0, 1e-12)
+    # The formula against what it claims to be: Sharpe of weighted over unweighted returns,
+    # with weights orthogonal to the returns by construction (period 4).
+    _w = _np.tile([1.0, 3.0, 1.0, 3.0], 250)
+    _r = 0.01 + _np.tile([1.0, 1.0, -1.0, -1.0], 250)
+    close("sizing_cost: equals Sharpe(w·r)/Sharpe(r) when the weights are noise",
+          QF.sizing_cost(_w), ((_w * _r).mean() / (_w * _r).std()) / (_r.mean() / _r.std()), 1e-4)
+
+    # z of [0, 1, 2] with the sample SD is [-1, 0, 1], so the weights are 1 + slope·z.
+    _sw = QF.sizing_from_slope([0.0, 1.0, 2.0], 0.5, 1.0)
+    ok("sizing_from_slope: hand case [0.5, 1, 1.5]", _np.allclose(_sw, [0.5, 1.0, 1.5], atol=1e-12), str(_sw))
+    _sw = QF.sizing_from_slope([0.0, 1.0, 2.0], 10.0, 1.0)
+    ok("sizing_from_slope: capped at [0.5, 2]", _np.allclose(_sw, [0.5, 1.0, 2.0], atol=1e-12), str(_sw))
+    ok("sizing_from_slope: zero base mean gives flat weights",
+       _np.allclose(QF.sizing_from_slope([0.0, 1.0, 2.0], 0.5, 0.0), 1.0))
+
+    _sc = [float(v) for v in range(200)]
+    _dr = QF.dose_response(_sc, [2.0 * v for v in _sc])
+    close("dose_response: slope per SD of a noiseless line = 2·stdev(score)",
+          _dr["slope_per_sd"], 2.0 * _st.stdev(_sc), 1e-9)
+    ok("dose_response: every observation lands in exactly one bucket", sum(_dr["n"]) == 200, str(_dr["n"]))
+    ok("dose_response: a noiseless rising line is monotone up",
+       _dr["monotone_up"] and not _dr["monotone_down"])
+    close("dose_response: Spearman of a monotone line is 1", _dr["spearman"], 1.0, 1e-12)
+    # The trap the module documents: a discrete 0-3 count with a REAL planted effect, which
+    # quantile edges once turned into empty buckets that failed gate 1.
+    _g = _np.random.default_rng(11)
+    _sc = _g.integers(0, 4, 2000).astype(float)
+    _pn = 0.25 * _sc + _g.normal(0, 1, 2000)
+    _dr = QF.dose_response(_sc, _pn)
+    ok("dose_response: a discrete 0-3 count gets one bucket per value",
+       _dr["ok"] and len(_dr["buckets"]) == 4, str(_dr.get("n")))
+    ok("dose_response: bucket means within 4 SE of the planted 0.25·k",
+       _dr["ok"] and all(abs(m - 0.25 * k) <= 4 * s for k, (m, s) in enumerate(zip(_dr["buckets"], _dr["se"]))),
+       str(_dr.get("buckets")))
+    ok("dose_response: the planted effect reads as monotone up", _dr["ok"] and _dr["monotone_up"])
+    ok("dose_response: a value with too few periods is dropped, not kept as nan",
+       QF.dose_response([0.0] * 100 + [1.0] * 100 + [2.0] * 100 + [3.0] * 5,
+                        [float(i % 7) for i in range(305)]).get("n") == [100, 100, 100])
+
+    def _avg_ranks(v):
+        order = sorted(range(len(v)), key=v.__getitem__)
+        ranks, i = [0.0] * len(v), 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+                j += 1
+            for k in order[i:j + 1]:
+                ranks[k] = (i + j) / 2
+            i = j + 1
+        return ranks
+
+    def _pearson(a, b):
+        ma, mb = sum(a) / len(a), sum(b) / len(b)
+        return (sum((x - ma) * (y - mb) for x, y in zip(a, b))
+                / math.sqrt(sum((x - ma) ** 2 for x in a) * sum((y - mb) ** 2 for y in b)))
+
+    # Swapping each pair of 0..99 makes every |d| = 1, so rho = 1 - 6n/(n(n²-1)).
+    _swap = [float(v + 1 if v % 2 == 0 else v - 1) for v in range(100)]
+    close("dose_response: Spearman without ties = 1 - 6/(n²-1)",
+          QF.dose_response([float(v) for v in range(100)], _swap)["spearman"], 1 - 6 / (100 ** 2 - 1), 1e-12)
+    _sl, _pl = [float(v) for v in _sc[:400]], [float(v) for v in _pn[:400]]
+    close("dose_response: Spearman with tied scores uses average ranks",
+          QF.dose_response(_sc[:400], _pn[:400])["spearman"], _pearson(_avg_ranks(_sl), _avg_ranks(_pl)), 1e-9)
+
+    # 20 disjoint rules on centred noise: the best t is the max of 20 t(49), whose quantiles
+    # are the t quantiles of 0.5^(1/20) and 0.95^(1/20) (t from z: Abramowitz-Stegun 26.7.5).
+    _g = _np.random.default_rng(0)
+    _pn0 = _g.normal(0, 1, 1000)
+    _pn0 -= _pn0.mean()
+    _mk = _np.zeros((20, 1000), bool)
+    for _i in range(20):
+        _mk[_i, 50 * _i:50 * (_i + 1)] = True
+    _sn = QF.search_null(_mk, _pn0, n_rep=400, seed=0)
+
+    def _t_quantile(p, df):
+        z = _st.NormalDist().inv_cdf(p)
+        return z + (z ** 3 + z) / (4 * df)
+
+    close("search_null: median best-of-20 t = max of 20 t(49)", _sn["median"], _t_quantile(0.5 ** (1 / 20), 49), 0.1)
+    close("search_null: 95th percentile of the best-of-20 t", _sn["q95"], _t_quantile(0.95 ** (1 / 20), 49), 0.3)
+    ok("search_null: no rule with enough periods is not a verdict",
+       QF.search_null(_mk, _pn0, min_n=51)["ok"] is False)
+
+    _jk = QF.jackknife_sign([float(v) for v in range(1, 21)])
+    close("jackknife_sign: worst leave-one-out mean of 1..20 = 190/19", _jk["worst_mean"], 10.0, 1e-12)
+    close("jackknife_sign: best leave-one-out mean of 1..20 = 209/19", _jk["best_mean"], 11.0, 1e-12)
+    close("jackknife_sign: top-3 share of 1..20 = 57/210", _jk["top3_share"], 57 / 210, 1e-12)
+    ok("jackknife_sign: the sign of 1..20 survives every deletion", _jk["sign_survives_all"])
+    _jk = QF.jackknife_sign([-1.0] * 19 + [100.0])
+    ok("jackknife_sign: one outlier carrying the mean is caught",
+       not _jk["sign_survives_all"] and _jk["worst_mean"] == -1.0)
+
+    # The whole gate, both directions, on base strategies whose own mean is not zero.
+    def _book(seed, effect, base, n=2000):
+        g = _np.random.default_rng(seed)
+        sc = g.integers(0, 4, n).astype(float)
+        pn = base + effect * (sc - 1.5) + g.normal(0, 1, n)
+        masks = _np.array([sc >= k for k in range(4)] + [g.random(n) < 0.5 for _ in range(6)])
+        rs = g.integers(0, 4, n).astype(float)
+        return sc, pn, masks, (rs, base + effect * (rs - 1.5) + g.normal(0, 1, n))
+
+    _sc, _pn, _mk, _rep = _book(1, 0.25, 1.0)
+    _cg = QF.confluence_gate(_sc, _pn, masks=_mk, replication=_rep, n_rep=200)
+    ok("confluence_gate: a planted effect on a profitable base passes all five gates",
+       all(_cg["gates"].values()) and _cg["verdict"].startswith("UTILIZZABILE"), str(_cg["gates"]))
+    _cg = QF.confluence_gate(_sc, _pn, masks=_mk, n_rep=200)
+    ok("confluence_gate: a gate not run gives NON DECIDIBILE, never a pass",
+       _cg["verdict"].startswith("NON DECIDIBILE") and "4_replicates" in _cg["verdict"], _cg["verdict"])
+    _sc, _pn, _mk, _rep = _book(2, 0.0, -0.3)
+    _cg = QF.confluence_gate(_sc, _pn, masks=_mk, replication=_rep, n_rep=200)
+    ok("confluence_gate: noise on a losing base does not beat its own null",
+       _cg["gates"]["2_beats_own_null"] is False and _cg["verdict"].startswith("NON USARE"), str(_cg["gates"]))
+
+
+# ══════════════════════════════════ qregime: no edge works forever (§5c)
+if _np is None:
+    SKIP.append(f"qregime: {_no_np}")
+else:
+    import statistics as _st
+    import qregime as QR
+
+    _bs = QR.block_shuffle(_np.arange(103, dtype=float), 10, _np.random.default_rng(0))
+    ok("block_shuffle: same values, none lost or repeated (103 = 10 blocks + 3)",
+       sorted(_bs) == list(range(103)))
+    _bs = QR.block_shuffle(_np.arange(100, dtype=float), 10, _np.random.default_rng(0))
+    ok("block_shuffle: every block of 10 stays whole and in order",
+       all(_bs[i] % 10 == 0 and list(_bs[i:i + 10]) == list(range(int(_bs[i]), int(_bs[i]) + 10))
+           for i in range(0, 100, 10)))
+    ok("block_shuffle: the order of the blocks changes", list(_bs) != list(range(100)))
+
+    _g = _np.random.default_rng(7)
+    _xs = _g.normal(0, 1, 700)
+    _xs[300:400] += 0.6
+    _ws = QR.window_scan(_xs, 100, n_null=50)
+    _ts = [_st.mean(_xs[i:i + 100]) / (_st.stdev(_xs[i:i + 100]) / 10) for i in range(0, 601, 25)]
+    close("window_scan: best window t matches a stdlib scan", _ws["best"], max(_ts), 1e-9)
+    ok("window_scan: the same windows, one every w/4", _ws["n_win"] == len(_ts), f"{_ws['n_win']} vs {len(_ts)}")
+    close("window_scan: share of windows above t = 2", _ws["frac_good"], sum(t > 2 for t in _ts) / len(_ts), 1e-12)
+    ok("window_scan: too short is not a verdict", QR.window_scan(_xs[:250], 100)["ok"] is False)
+
+    # P3 by hand: +1 for 500 days, then -1 for 500, trailing 250-day mean. The switch stays on
+    # until day 625, where the window holds as many losses as gains: 250 gains and 125 losses
+    # selected, mean 1/3, against -1/3 always on. A window that includes today changes both.
+    _x = _np.array([1.0] * 500 + [-1.0] * 500)
+    _sw = QR.regime_switch(_x, look=250)
+    ok("regime_switch: on for 375 of 750 days", _sw["duty"] == 0.5, str(_sw["duty"]))
+    close("regime_switch: the trailing rule earns 1/3 a day", _sw["mean_rule"], 1 / 3, 1e-12)
+    close("regime_switch: always on earns -1/3 a day", _sw["mean_always"], -1 / 3, 1e-12)
+    ok("regime_switch: beats always-on and the random switch", _sw["beats_always"] and _sw["beats_random"])
+    _sw = QR.regime_switch(_x, look=250, detector=[1.0 if i % 2 == 0 else -1.0 for i in range(1000)])
+    close("regime_switch: a given detector is used as is (even days: -1/3)", _sw["mean_rule"], -1 / 3, 1e-12)
+    ok("regime_switch: too short is not a verdict", QR.regime_switch(_x[:300], look=250)["ok"] is False)
+
+    # The module's own power check: an edge confined to a quarter of the sample must come back
+    # real and identifiable in advance; pure noise must not.
+    _vp = QR.validate_power()
+    ok("validate_power: a regime-limited edge beats the block null (P2)", _vp["regime_edge"]["P2_more_than_chance"])
+    ok("validate_power: and is identifiable in advance (P3)", _vp["regime_edge"]["P3_identifiable_ex_ante"])
+    ok("validate_power: pure noise does not beat the block null", not _vp["no_edge"]["P2_more_than_chance"])
+    ok("regime_report: the verdict follows P2 and P3",
+       _vp["regime_edge"]["verdict"].startswith("ROTAZIONE SOSTENUTA")
+       and not _vp["no_edge"]["verdict"].startswith(("ROTAZIONE", "REGIMI REALI")), _vp["no_edge"]["verdict"])
 
 # ══════════════════════════════════ summary
 print(f"\n{'='*66}\nquant-rigor test suite\n{'='*66}")
