@@ -135,6 +135,12 @@ def bootstrap(x, stat=sum, reps=10000, seed=7, block=1):
     (0-100), like every ``_pct`` field in this package. Do not multiply by 100 again.
     """
     rnd = random.Random(seed)
+    # COERCED TO A LIST, and this is not cosmetic. The wrap-around branch below relies on
+    # `+` meaning CONCATENATION. On a numpy array `+` is elementwise ADDITION: when the two
+    # slices have different lengths it raises, and when they happen to have the SAME length
+    # it silently adds the numbers and returns a plausible, wrong band. The crash is the
+    # lucky case. Found 2026-08-10 by calling bootstrap(block=5) on an ndarray.
+    x = list(x)
     n = len(x)
     vals = []
     for _ in range(reps):
@@ -158,6 +164,7 @@ def bootstrap(x, stat=sum, reps=10000, seed=7, block=1):
 
 def jackknife(x, stat=sum):
     """Drop-one stability: does the sign survive every single deletion?"""
+    x = list(x)          # `x[:i] + x[i+1:]` must CONCATENATE — see the note in bootstrap()
     n = len(x)
     outs = []
     for i in range(n):
@@ -206,11 +213,78 @@ def concentration(x, top=3):
 
 def headroom(sd_period, n, n_variants):
     """Best-of-N noise headroom: sigma_total * sqrt(2 ln N).
-    Any winner inside this band is indistinguishable from luck.
-    Inverse use: if 0/N beat the baseline while headroom was large, the deficit is STRUCTURAL."""
+
+    WHAT THIS IS, STATED EXACTLY (measured, not asserted): sqrt(2 ln N) is the leading
+    term of the asymptotic for the max of N iid normals. It is NOT the mean of that max,
+    and it is NOT a fixed significance level -- the quantile it corresponds to DRIFTS
+    with N:
+
+        N=2 -> 22.5%   N=8 -> 15.4%   N=100 -> 11.3%   N=462 -> 10.1%   N=1e4 -> 8.5%
+
+    So "beats the headroom" is a WEAK screen (roughly the 10-20% level), not a 5% test.
+    A winner just above it is still beaten by noise in one search out of six to ten.
+    For a stated significance level use `search_threshold()` below.
+
+    Inverse use, and this one is strong: if 0/N beat the baseline while headroom was
+    large, the deficit is STRUCTURAL, not sampling."""
     if n_variants < 2:
         return 0.0
     return sd_period * math.sqrt(n) * math.sqrt(2 * math.log(n_variants))
+
+
+def _norm_sf(t):
+    """P(Z > t) for standard normal, via erfc — accurate deep in the tail where
+    1 - Phi(t) would lose every significant digit to cancellation."""
+    return 0.5 * math.erfc(t / math.sqrt(2.0))
+
+
+def _max_exceed_prob(t, n):
+    """P(max of n iid standard normals > t) = 1 - Phi(t)^n.
+
+    Computed as -expm1(n * log1p(-sf)) rather than 1 - (1-sf)**n: at t=4, sf is 3e-5 and
+    the naive form throws away the answer's leading digits. The whole point of this
+    function is the tail, so the tail is where it has to be right."""
+    sf = _norm_sf(t)
+    if sf >= 1.0:
+        return 1.0
+    return -math.expm1(n * math.log1p(-sf))
+
+
+def search_threshold(n_variants, alpha=0.05):
+    """EXACT critical t for the best of `n_variants` independent tries, at level `alpha`.
+
+    Solves P(max of N iid standard normals > t) = alpha, i.e. 1 - Phi(t)^N = alpha.
+    Use this when you want to say "significant at 5% after searching N" instead of the
+    looser `headroom()` screen.
+
+        search_threshold(8)    -> 2.49   (vs sqrt(2 ln 8)   = 2.04, which is the 15.4% level)
+        search_threshold(462)  -> 3.69   (vs sqrt(2 ln 462) = 3.50, which is the 10.1% level)
+
+    CAVEAT that cuts both ways and must not be assumed away: this assumes the N tries are
+    INDEPENDENT. Real variant grids are correlated, so the effective N is smaller and the
+    true threshold is LOWER -- with mean rho 0.3 over 462 alphas the effective breadth
+    collapses to ~3.3 and the 5% threshold falls to ~2.16. The correction is large in both
+    directions, so measure it (`qportfolio.effective_breadth`) rather than guess."""
+    if n_variants < 2:
+        return 1.959963984540054      # N=1: il classico 1,96 a due code
+    lo, hi = 0.0, 12.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if _max_exceed_prob(mid, n_variants) > alpha:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def search_quantile(n_variants):
+    """Which significance level does sqrt(2 ln N) actually correspond to, for this N?
+
+    Exists so the drift is visible instead of assumed: callers who reach for headroom()
+    can print the level they are really screening at."""
+    if n_variants < 2:
+        return 1.0
+    return _max_exceed_prob(math.sqrt(2 * math.log(n_variants)), n_variants)
 
 
 def required_n(sd_period, effect_per_period, t_target=2.0):
@@ -423,3 +497,166 @@ def _main():
 
 if __name__ == "__main__":
     _main()
+
+# ---------------------------------------------------------------- 60. soglia raggiungibile
+
+
+def reachable_threshold(window, threshold, ddof=0):
+    """La soglia e' RAGGIUNGIBILE dallo stimatore, o il test non puo' sparare mai?
+
+    IL BUG CHE ESISTE PER PRENDERE (2026-07-30): uno z-score su finestra W, calcolato per un
+    punto DENTRO la finestra, ha un massimo ALGEBRICO:
+        sd di popolazione (ddof=0):  |z|max = sqrt(W-1)
+        sd campionaria    (ddof=1):  |z|max = (W-1)/sqrt(W)
+    Con W=4 e ddof=0 il massimo e' 1.732: una soglia |z|>2 e' MATEMATICAMENTE IRRAGGIUNGIBILE.
+    La strategia stava in posizione lo 0.0% del tempo, senza sollevare NESSUN errore. Un test
+    che non puo' sparare non e' un test superato: e' un test rotto, e assomiglia a un
+    risultato negativo.
+
+    Da chiamare PRIMA di ogni backtest che usi una soglia su una statistica normalizzata.
+    """
+    if window < 2:
+        return {"reachable": False, "max_abs": 0.0,
+                "note": "finestra < 2: nessuna statistica definita"}
+    m = math.sqrt(window - 1) if ddof == 0 else (window - 1) / math.sqrt(window)
+    ok = abs(threshold) < m
+    need = None
+    if not ok:
+        # finestra minima che rende raggiungibile la soglia
+        w = max(2, int(math.ceil(threshold ** 2 + 1)) if ddof == 0 else 2)
+        while True:
+            mm = math.sqrt(w - 1) if ddof == 0 else (w - 1) / math.sqrt(w)
+            if mm > abs(threshold):
+                break
+            w += 1
+            if w > 10 ** 7:
+                break
+        need = w
+    return {"reachable": bool(ok), "max_abs": m, "threshold": threshold,
+            "window": window, "ddof": ddof, "min_window_needed": need,
+            "note": ("ok" if ok else
+                     f"IRRAGGIUNGIBILE: |z|max={m:.3f} < soglia {abs(threshold):.3f}. "
+                     f"La regola non puo' sparare MAI. Serve finestra >= {need}.")}
+
+
+def event_rate_check(n_events, years, intended_per_year, tol=2.0, label="regola"):
+    """Il tasso di eventi osservato corrisponde a quello che la regola INTENDE?
+
+    DUE BUG PRESI COSI' (2026-07-30): un ORB e una reversione a zona rientravano 5-7 volte al
+    giorno invece di una, perche' mancava il flag "gia' operato oggi" — 5 492 e 2 743 cambi di
+    posizione l'anno invece di ~730. Nessun errore, solo numeri sbagliati a valle.
+    E in senso opposto: uno z-score che non spara mai da 0 eventi.
+
+    Da chiamare subito dopo aver generato i segnali e PRIMA di guardare il P&L.
+    """
+    rate = n_events / years if years > 0 else float("inf")
+    ratio = rate / intended_per_year if intended_per_year > 0 else float("inf")
+    ok = (1.0 / tol) <= ratio <= tol
+    if n_events == 0:
+        note = ("ZERO EVENTI: non e' un risultato negativo, e' una regola che non spara. "
+                "Verifica che la soglia sia raggiungibile (reachable_threshold).")
+    elif ratio > tol:
+        note = (f"{ratio:.1f}x TROPPI eventi: cerca un vincolo mancante (una sola operazione "
+                "per giorno/sessione? un flag 'gia' fatto'? un cooldown?).")
+    elif ratio < 1.0 / tol:
+        note = (f"{ratio:.2f}x troppo POCHI: la condizione e' piu' stretta di quanto credi.")
+    else:
+        note = "ok"
+    return {"label": label, "n_events": n_events, "rate_per_year": rate,
+            "intended": intended_per_year, "ratio": ratio, "ok": bool(ok), "note": note}
+
+
+def log_to_simple(x):
+    """Converte una metrica calcolata in spazio LOG in composta. Sembra banale: non lo e'.
+
+    ERRORE COMMESSO (2026-07-30): ho pubblicato drawdown calcolati su cumsum di log-rendimenti
+    stampandoli come percentuali. −0.652 in log e' −48% reale, non −65%. Sovrastimava il
+    drawdown di 17 punti su ogni riga di ogni tabella.
+    Regola: qualunque numero nato in spazio log si converte PRIMA di pubblicarlo, e la scala
+    si dichiara nell'etichetta.
+    """
+    return math.exp(x) - 1.0
+
+# ---------------------------------------------------------------- 61. anni per decidere
+
+
+# Decadenza post-pubblicazione misurata da McLean & Pontiff (2016) su 97 anomalie:
+# ~26% dovuto a rumore statistico nel campione originale, ~32% al fatto che il mercato la
+# arbitraggia dopo la pubblicazione. Il rendimento fuori campione e' circa il 42% di quello
+# dichiarato. ⚠ E' un numero PRESO IN PRESTITO da una popolazione di anomalie azionarie
+# americane: se la strategia in esame e' di altra natura, va rimisurato o dichiarato tale (G5).
+PUBLICATION_DECAY = 0.42
+
+
+def years_to_decide(sharpe, t_target=2.0, decay=None, years_available=None):
+    """Quanti anni servono perche' questo Sharpe si distingua da zero? DA CHIAMARE PRIMA
+    di scrivere il backtest, non dopo.
+
+    Da `t = Sharpe x sqrt(anni)` segue `anni = (t_target / Sharpe)^2`. E' la domanda che
+    rende molte analisi inutili prima ancora di cominciare: uno Sharpe di 0.35 — la mediana
+    delle strategie pubblicate — richiede **31 anni** per t=2, e 175 anni dopo la decadenza
+    post-pubblicazione. Scrivere quel backtest e' tempo speso per produrre un numero che non
+    puo' decidere niente.
+
+    Misurato il 2026-08-04 su 60 strategie pubblicate con Sharpe dichiarato
+    (paperswithbacktest/awesome-systematic-trading):
+        Sharpe mediano 0.359 · 9 su 60 gia' NEGATIVO nel paper
+        decidibili con 20 anni al valore dichiarato ......... 22 su 60
+        decidibili con 20 anni dopo la decadenza ............  0 su 60
+
+    Per il calcolo rigoroso (che corregge per asimmetria, curtosi e numero di tentativi) usare
+    `qvalidate.min_track_record_length` e `qvalidate.deflated_sharpe`. Questa e' la versione
+    da un rigo, buona per il cancello d'ingresso.
+    """
+    s = float(sharpe)
+    out = {"sharpe": s, "t_target": float(t_target)}
+    if s <= 0:
+        out["years"] = float("inf")
+        out["note"] = "Sharpe non positivo: nessun orizzonte lo rende positivo"
+        return out
+    out["years"] = (float(t_target) / s) ** 2
+    if decay is not None or decay is None:
+        d = PUBLICATION_DECAY if decay is None else float(decay)
+        sd = s * d
+        out["decay_applied"] = d
+        out["sharpe_after_decay"] = sd
+        out["years_after_decay"] = (float(t_target) / sd) ** 2 if sd > 0 else float("inf")
+    if years_available is not None:
+        ya = float(years_available)
+        out["years_available"] = ya
+        out["decidable_at_claimed"] = out["years"] <= ya
+        out["decidable_after_decay"] = out.get("years_after_decay", float("inf")) <= ya
+        out["max_t_reachable"] = s * math.sqrt(ya)
+        out["verdict"] = ("DECIDIBILE" if out["decidable_after_decay"] else
+                          ("decidibile solo al valore DICHIARATO, non dopo la decadenza"
+                           if out["decidable_at_claimed"] else
+                           f"NON DECIDIBILE: servono {out['years']:.0f} anni "
+                           f"({out.get('years_after_decay', float('inf')):.0f} dopo decadenza), "
+                           f"ne hai {ya:.0f}"))
+    return out
+
+
+def literature_queue(entries, years_available, t_target=2.0, decay=None):
+    """Ordina una lista di strategie pubblicate per DECIDIBILITA', non per Sharpe.
+
+    `entries`: lista di dict con almeno `name` e `sharpe`.
+    Il Sharpe pubblicato e' il massimo di una ricerca che non hai controllato, in un contesto
+    che non hai verificato: serve a ORDINARE la coda, mai a decidere. Quello che decide e'
+    se l'orizzonte disponibile basta a distinguerlo da zero.
+    """
+    out = []
+    for e in entries:
+        r = years_to_decide(e.get("sharpe", 0.0), t_target=t_target, decay=decay,
+                            years_available=years_available)
+        out.append(dict(e, **{"years_needed": r["years"],
+                              "years_after_decay": r.get("years_after_decay", float("inf")),
+                              "decidable": r.get("decidable_at_claimed", False),
+                              "decidable_after_decay": r.get("decidable_after_decay", False)}))
+    out.sort(key=lambda x: x["years_needed"])
+    n_ok = sum(1 for x in out if x["decidable"])
+    n_dec = sum(1 for x in out if x["decidable_after_decay"])
+    return {"queue": out, "n": len(out), "n_decidable_claimed": n_ok,
+            "n_decidable_after_decay": n_dec,
+            "note": (f"{n_ok}/{len(out)} decidibili in {years_available:.0f} anni al valore "
+                     f"dichiarato, {n_dec}/{len(out)} dopo la decadenza post-pubblicazione. "
+                     "Il Sharpe pubblicato ordina la coda; non e' evidenza.")}

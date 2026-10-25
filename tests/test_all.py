@@ -6,6 +6,7 @@ closed-form results, or analytically known values) — never against the library
 That discipline is what caught a 1% p-value error in the t-tail at df=1.
 """
 import math
+import random
 import os
 import sys
 import xml.dom.minidom
@@ -17,6 +18,9 @@ import qstats as S          # noqa: E402
 import qvalidate as V       # noqa: E402
 import qsize as Z           # noqa: E402
 import qcharts as C         # noqa: E402
+import qmicro as MI      # noqa: E402
+import qportfolio as PF  # noqa: E402
+import qclaim as QC      # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -133,6 +137,29 @@ close("headroom = sd*sqrt(n)*sqrt(2 ln N)", S.headroom(10.0, 25, 100),
 ok("headroom 0 for single variant", S.headroom(10.0, 25, 1) == 0.0)
 close("required_n = (t*sd/eff)^2", S.required_n(287.0, 52.0, 2.0), (2 * 287 / 52) ** 2, 1e-9)
 ok("required_n infinite for zero effect", S.required_n(10, 0) == float('inf'))
+
+
+# ══════════════════ 8b. la soglia ESATTA della ricerca, e la deriva di sqrt(2 ln N)
+#
+# Nato da un errore reale: sqrt(2 ln N) era usato come se fosse "la soglia di
+# significativita' dopo aver cercato N volte". Non lo e'. Non e' nemmeno la MEDIA del
+# massimo, ed e' un quantile che DERIVA con N — 22,5% a N=2, 15,4% a N=8, 8,5% a N=1e4.
+# Chi lo usa come test al 5% sta usando uno screening al 10-20%.
+close("search_threshold(8, 5%) = 2.490", S.search_threshold(8, 0.05), 2.490, 0.003)
+close("search_threshold(462, 5%) = 3.693", S.search_threshold(462, 0.05), 3.693, 0.003)
+close("search_threshold(462, 1%) = 4.088", S.search_threshold(462, 0.01), 4.088, 0.003)
+close("search_threshold(462, 10%) = 3.505", S.search_threshold(462, 0.10), 3.505, 0.003)
+close("search_quantile(8) = 15.4%", S.search_quantile(8), 0.154, 0.002)
+close("search_quantile(462) = 10.1%", S.search_quantile(462), 0.101, 0.002)
+close("search_quantile(10000) = 8.5%", S.search_quantile(10000), 0.085, 0.002)
+ok("il quantile di sqrt(2 ln N) DERIVA con N (non e' fisso)",
+   S.search_quantile(2) > S.search_quantile(8) > S.search_quantile(462) > S.search_quantile(10000))
+ok("sqrt(2 ln N) sta SOPRA la media del massimo e SOTTO la soglia al 5%",
+   all(S.search_threshold(n, 0.05) > math.sqrt(2*math.log(n)) for n in (8, 100, 462, 10000)))
+ok("soglia piu' severa = t piu' alto", S.search_threshold(462, 0.01) > S.search_threshold(462, 0.05)
+   > S.search_threshold(462, 0.10))
+ok("stabile nella coda profonda (niente cancellazione a t alto)",
+   0.0 < S._max_exceed_prob(6.0, 462) < 1e-6)
 
 # ══════════════════════════════════ 9. HAC / Newey-West
 iid = [1.0, -1.0] * 40                                  # strongly negatively autocorrelated
@@ -522,10 +549,353 @@ ok("report runs", S.report([1.0, -2.0, 3.0], "x", 5).startswith("==="))
 ok("validate report runs", V.report([0.01, -0.02, 0.03], 5, 0.2).startswith("==="))
 ok("size report runs", Z.report(0.01, 0.1).startswith("==="))
 
+# ══════════════════════════════════ 18. qmicro + RAS (v1.4)
+import random as _rnd
+import qmicro as M          # noqa: E402
+
+# --- Corwin-Schultz e Roll contro uno spread NOTO ---------------------------------
+_r = _rnd.Random(11)
+_TRUE = 0.02
+_mid, _hi, _lo, _cl = 100.0, [], [], []
+for _ in range(3000):
+    _mid *= math.exp(_r.gauss(0, 0.0008))
+    _rng = abs(_r.gauss(0, 0.0008)) * _mid
+    _hi.append(_mid + _rng + _TRUE / 2)
+    _lo.append(_mid - _rng - _TRUE / 2)
+    _cl.append(_mid + (_TRUE / 2 if _r.random() < 0.5 else -_TRUE / 2))
+_cs = M.corwin_schultz_median(_hi, _lo, window=1)
+ok("corwin_schultz produce una stima", _cs is not None)
+ok("corwin_schultz in range plausibile", _cs is not None and 0.0 <= _cs <= 0.01, f"got {_cs}")
+_rs = M.roll_spread(_cl)
+ok("roll_spread positivo con bounce", _rs is not None and _rs > 0)
+ok("roll_spread nell ordine dello spread vero",
+   _rs is not None and abs(_rs - _TRUE) < _TRUE, f"got {_rs:.5f} vs {_TRUE}")
+ok("roll_spread ritorna None su trend lineare (cov solo rumore numerico)",
+   M.roll_spread([100.0 + 0.1 * i for i in range(200)]) is None)
+_ar, _p, _dp = [], 100.0, 0.0
+for _ in range(500):                      # AR(1) con phi>0: incrementi persistenti
+    _dp = 0.7 * _dp + _r.gauss(0, 0.05)
+    _p += _dp; _ar.append(_p)
+ok("roll_spread ritorna None su incrementi persistenti (phi>0)", M.roll_spread(_ar) is None)
+ok("roll_spread None su input minuscolo", M.roll_spread([1.0, 2.0]) is None)
+ok("corwin_schultz lista vuota su input minuscolo", M.corwin_schultz_spread([1.0], [1.0]) == [])
+
+# --- cost cliff: identita' verificabili -------------------------------------------
+_cc = M.cost_cliff(2.0, 1000, 1.0, 10.0)
+ok("cost_cliff netto < lordo", _cc["net_sharpe"] < _cc["gross_sharpe"])
+close("cost_cliff costo zero => netto == lordo", M.cost_cliff(2.0, 1000, 0.0, 10.0)["net_sharpe"], 2.0, 1e-9)
+_f = M.max_trade_frequency(2.0, 1.0, 1.0, 10.0)
+close("max_trade_frequency inverte cost_cliff", M.cost_cliff(2.0, _f, 1.0, 10.0)["net_sharpe"], 1.0, 1e-6)
+close("required_edge_per_trade al 20%", M.required_edge_per_trade(1.0, 0.20), 5.0, 1e-9)
+ok("cost_cliff segnala il non-sopravvissuto", not M.cost_cliff(0.5, 5000, 2.0, 10.0)["survives"])
+
+# --- decomposizione slippage: il residuo DEVE chiudere a zero ---------------------
+_d = M.decompose_slippage(100.0, 100.5, 110.0, 109.0, side=+1,
+                          commission_per_round_trip=2.0, multiplier=1.0)
+close("slippage pnl teorico", _d["theoretical_pnl"], 10.0, 1e-9)
+close("slippage pnl reale", _d["realised_pnl"], 6.5, 1e-9)
+close("slippage entrata", _d["entry_slippage"], -0.5, 1e-9)
+close("slippage uscita", _d["exit_slippage"], -1.0, 1e-9)
+close("slippage residuo chiude a zero", _d["unexplained_residual"], 0.0, 1e-9)
+_ds = M.decompose_slippage(110.0, 109.5, 100.0, 101.0, side=-1, commission_per_round_trip=2.0)
+close("slippage short: residuo chiude a zero", _ds["unexplained_residual"], 0.0, 1e-9)
+
+# --- Rademacher / RAS -------------------------------------------------------------
+_r2 = _rnd.Random(3)
+_T = 600
+_base = [_r2.gauss(0, 0.01) for _ in range(_T)]
+_corr = [[b + _r2.gauss(0, 0.001) for b in _base] for _ in range(30)]
+_indep = [[_r2.gauss(0, 0.01) for _ in range(_T)] for _ in range(30)]
+_rc = V.rademacher_complexity(_corr, reps=400, seed=2)
+_ri = V.rademacher_complexity(_indep, reps=400, seed=2)
+ok("Rademacher: correlate < indipendenti", _rc < _ri, f"{_rc:.5f} < {_ri:.5f}")
+_mb = V.massart_bound(30, _T)
+ok("Rademacher empirico <= Massart (correlate)", _rc <= _mb * 1.05)
+ok("Rademacher empirico <= Massart (indipendenti)", _ri <= _mb * 1.05)
+ok("Massart cresce con N", V.massart_bound(100, _T) > V.massart_bound(10, _T))
+ok("trial efficaci: correlate < indipendenti",
+   V.effective_trials(30, _T, _rc) < V.effective_trials(30, _T, _ri))
+_hi_ras = V.ras_sharpe_adjustment(5.0, _corr, reps=400, seed=2)
+_lo_ras = V.ras_sharpe_adjustment(0.05, _corr, reps=400, seed=2)
+ok("RAS: Sharpe alto sopravvive", _hi_ras["sharpe_floor_ann"] > 0)
+ok("RAS: Sharpe marginale non sopravvive", _lo_ras["sharpe_floor_ann"] < 0)
+ok("RAS: Massart >= empirico", _hi_ras["massart_ann"] >= _hi_ras["rademacher_ann"])
+ok("RAS gestisce input minuscolo", "error" in V.ras_sharpe_adjustment(1.0, [[0.1, 0.2]]))
+ok("rademacher su lista vuota non crasha", math.isnan(V.rademacher_complexity([])))
+ok("qmicro non tocca la rete", "urllib" not in open(os.path.join(HERE, "..", "scripts", "qmicro.py")).read())
+
+# --- guardia di frequenza: lo stimatore va applicato alla risoluzione giusta -------
+# Discriminante corretto = TICK impliciti, non quota del range di barra (il primo
+# tentativo usava il range e non discriminava: ~50% su daily, ~29% a 1 minuto).
+_pl_ok = M.plausibility_flag(1.57e-4, mid_price=20000.0, tick_size=0.25)      # ~1.3 tick
+_pl_no = M.plausibility_flag(62.5e-4, mid_price=4200.0, tick_size=0.25)        # ~105 tick
+ok("plausibility: stima a 1 tick e' credibile", _pl_ok["plausible"] is True,
+   f"{_pl_ok['implied_ticks']:.1f} tick")
+ok("plausibility: stima a 100+ tick NON e' credibile", _pl_no["plausible"] is False,
+   f"{_pl_no['implied_ticks']:.0f} tick")
+ok("plausibility: input mancante -> None, non un falso ok",
+   M.plausibility_flag(None, 100.0, 0.25)["plausible"] is None)
+ok("bounce_check espone la plausibilita' di entrambi gli stimatori",
+   all(k in M.bounce_check(_cl, _hi, _lo, 0.02)
+       for k in ("roll_plausibility", "corwin_schultz_plausibility")))
+
+# ══════════════════════════════════ 19. qpairs (v1.4)
+import qpairs as PR        # noqa: E402
+
+_rp = _rnd.Random(5)
+# (a) coppia COINTEGRATA sintetica: y = 2x + OU(phi=0.92)
+_x, _sp, _X, _Y = 100.0, 0.0, [], []
+for _ in range(1500):
+    _x += _rp.gauss(0, 0.5)
+    _sp = 0.92 * _sp + _rp.gauss(0, 0.4)
+    _X.append(_x); _Y.append(2.0 * _x + _sp)
+_eg = PR.engle_granger(_Y, _X)
+close("engle_granger recupera l hedge ratio vero", _eg["hedge_ratio"], 2.0, 0.15)
+ok("engle_granger: coppia cointegrata riconosciuta", _eg["cointegrated_at_5pct"])
+_HL_TRUE = -math.log(2) / math.log(0.92)
+close("half-life vicina alla teorica", _eg["half_life"], _HL_TRUE, 0.5 * _HL_TRUE)
+
+# (b) CONTROLLO NEGATIVO — e' un test al 5%: una SINGOLA estrazione fallisce il 5% delle
+#     volte per costruzione. Si verifica quindi la CALIBRAZIONE su molte repliche, che e'
+#     l'unica proprieta' davvero interessante di una procedura statistica.
+def _mc_rate(make, predicate, reps=120, seed0=4000):
+    hits = 0
+    for _s in range(reps):
+        hits += 1 if predicate(make(_rnd.Random(seed0 + _s))) else 0
+    return hits / reps
+
+
+def _two_walks(rr, n=800):
+    a = b = 100.0; A = []; B = []
+    for _ in range(n):
+        a += rr.gauss(0, 0.5); b += rr.gauss(0, 0.5); A.append(a); B.append(b)
+    return A, B
+
+
+_A, _B = _two_walks(_rnd.Random(77), n=1500)   # coppia di riferimento per i confronti
+_fp_eg = _mc_rate(_two_walks, lambda ab: PR.engle_granger(ab[0], ab[1])["cointegrated_at_5pct"])
+ok("Engle-Granger: falsi positivi su random walk vicini al 5%", 0.0 <= _fp_eg <= 0.15,
+   f"tasso {100*_fp_eg:.1f}% su 120 repliche")
+ok("Engle-Granger usa soglie piu severe dell ADF semplice",
+   PR.engle_granger(_A, _B)["critical_values"]["5%"] < PR.adf_stat(_A)["critical_values"]["5%"])
+
+
+def _one_walk(rr, n=800):
+    w = [100.0]
+    for _ in range(n):
+        w.append(w[-1] + rr.gauss(0, 0.5))
+    return w
+
+
+_fp_adf = _mc_rate(_one_walk, lambda w: PR.adf_stat(w)["stationary_at_5pct"], seed0=6000)
+ok("ADF: falsi positivi su random walk vicini al 5% (calibrazione)", 0.0 <= _fp_adf <= 0.15,
+   f"tasso {100*_fp_adf:.1f}% su 120 repliche")
+
+# (c) Hurst: mediana su repliche, non singola estrazione
+def _median(v):
+    v = sorted(v); return v[len(v) // 2]
+
+
+_h_rw, _h_ou, _h_tr = [], [], []
+for _s in range(40):
+    _r2 = _rnd.Random(8000 + _s)
+    _h_rw.append(PR.hurst(_one_walk(_r2))["hurst"])
+    _z = [0.0]
+    for _ in range(1200):
+        _z.append(0.9 * _z[-1] + _r2.gauss(0, 1))
+    _h_ou.append(PR.hurst(_z)["hurst"])
+    _h_tr.append(PR.hurst([float(_i) * 0.5 + _r2.gauss(0, 3.0) for _i in range(800)])["hurst"])
+close("Hurst mediano su random walk ~ 0.5", _median(_h_rw), 0.5, 0.08)
+ok("Hurst mediano su OU sotto 0.45", _median(_h_ou) < 0.45, f"{_median(_h_ou):.3f}")
+ok("Hurst mediano su trend sopra 0.55", _median(_h_tr) > 0.55, f"{_median(_h_tr):.3f}")
+
+# (d) half-life: la MEDIANA su repliche deve centrare la formula chiusa
+_HL_AR = -math.log(2) / math.log(0.9)
+_hls = []
+for _s in range(60):
+    _r3 = _rnd.Random(9000 + _s); _z = [0.0]
+    for _ in range(2000):
+        _z.append(0.9 * _z[-1] + _r3.gauss(0, 1))
+    _hls.append(PR.ou_half_life(_z)["half_life"])
+close("half-life: mediana su 60 repliche vs formula AR(1)", _median(_hls), _HL_AR, 0.20 * _HL_AR)
+ok("half-life: nessuna replica assurda", all(1.0 < v < 30.0 for v in _hls))
+ok("half-life inf/lunga se non c'e reversione",
+   PR.ou_half_life(_A)["half_life"] > 50 or math.isinf(PR.ou_half_life(_A)["half_life"]))
+ok("ou_half_life gestisce campione minuscolo",
+   math.isnan(PR.ou_half_life([1.0, 2.0, 3.0])["half_life"]))
+_ou = [0.0]                                   # OU di riferimento (phi=0.9)
+for _ in range(2000):
+    _ou.append(0.9 * _ou[-1] + _rnd.Random(4242).gauss(0, 1) if False else 0.9 * _ou[-1])
+_ourng = _rnd.Random(4242)
+_ou = [0.0]
+for _ in range(2000):
+    _ou.append(0.9 * _ou[-1] + _ourng.gauss(0, 1))
+ok("ADF non inventa un p-value", "p_value" not in PR.adf_stat(_ou))
+ok("ADF: OU stazionario al 5%", PR.adf_stat(_ou)["stationary_at_5pct"])
+
+# (f) Kalman: su beta costante deve convergere al beta vero
+_kx = [float(i) + _rp.gauss(0, 1) for i in range(400)]
+_ky = [3.0 * v + _rp.gauss(0, 0.5) for v in _kx]
+_k = PR.kalman_hedge_ratio(_ky, _kx)
+close("kalman converge al beta vero", _k["beta_final"], 3.0, 0.4)
+ok("kalman restituisce il percorso di beta", len(_k["beta"]) == len(_kx))
+ok("qpairs non tocca la rete",
+   "urllib" not in open(os.path.join(HERE, "..", "scripts", "qpairs.py")).read())
+
+# ============================================================ v1.5 — le guardie del silenzio
+# Ogni assert qui riproduce un errore REALMENTE commesso il 2026-07-30. Se uno fallisce, la
+# guardia corrispondente non prende piu' il bug che esiste per prendere.
+print("\n-- v1.5: guardie contro i fallimenti silenziosi --")
+
+# soglia irraggiungibile: z su finestra 4 con sd di popolazione ha |z|max = sqrt(3) = 1.732
+_r = S.reachable_threshold(4, 2.0, ddof=0)
+ok("reachable: W=4 ddof=0 soglia 2 e' irraggiungibile", _r["reachable"] is False)
+close("reachable: |z|max = sqrt(W-1)", _r["max_abs"], math.sqrt(3), 1e-12)
+ok("reachable: propone una finestra minima", _r["min_window_needed"] >= 5)
+close("reachable: ddof=1 da (W-1)/sqrt(W)", S.reachable_threshold(4, 2.0, ddof=1)["max_abs"],
+      1.5, 1e-12)
+ok("reachable: W=240 soglia 2 va bene", S.reachable_threshold(240, 2.0, 0)["reachable"] is True)
+ok("reachable: soglia bassa non segnalata", S.reachable_threshold(100, 1.0, 0)["reachable"] is True)
+
+# drawdown in scala log spacciato per percentuale: -0.652 log = -47.9% reale, non -65.2%
+close("log_to_simple: -0.652 log = -47.9% reale", 100 * S.log_to_simple(-0.652), -47.9, 0.1)
+close("log_to_simple: 0 -> 0", S.log_to_simple(0.0), 0.0, 1e-15)
+
+# tasso di evento: ORB che rientrava 7.5x per un flag mancante
+_e = S.event_rate_check(54920, 10.0, 730)
+ok("event_rate: prende 7.5x troppi eventi", _e["ok"] is False and _e["ratio"] > 7)
+ok("event_rate: zero eventi non e' un negativo", "ZERO EVENTI" in S.event_rate_check(0, 10.0, 730)["note"])
+ok("event_rate: tasso corretto passa", S.event_rate_check(7300, 10.0, 730)["ok"] is True)
+
+# due guardie di plausibilita' su casi DISGIUNTI
+_a = MI.plausibility_flag(62e-4, 2128.0, 0.25)                       # ES daily
+close("guardia A: ES daily implica 53 tick", _a["implied_ticks"], 52.77, 0.1)
+ok("guardia A: applicabile su ES (tick grossolano)", _a["guard_a_applicable"] is True)
+ok("guardia A: respinge ES daily", _a["plausible"] is False)
+ok("guardia A sola -> coverage 'A only'", _a["coverage"] == "A only")
+_ba = MI.plausibility_flag(17.87e-4, 58000.0, 0.01)                  # BTC, tick inutile
+ok("BTC: il conteggio in tick e' enorme ma privo di senso", _ba["implied_ticks"] > 4000)
+ok("BTC: la guardia A si dichiara NON APPLICABILE", _ba["guard_a_applicable"] is False)
+ok("BTC: senza la B non si emette giudizio", _ba["plausible"] is None)
+ok("BTC: e lo dice", "NON VERIFICABILE" in _ba["note"])
+_b = MI.plausibility_flag(17.87e-4, 58000.0, 0.01, median_bar_range_rel=6.15e-4)
+ok("guardia B: su BTC copre da sola (A non applicabile)", _b["coverage"] == "B only")
+ok("guardia B: respinge BTC sulla fisica", _b["plausible"] is False and _b["guard_b_ok"] is False)
+close("guardia B: 17.87bp = 2.9x il range di 6.15bp", _b["range_share"], 17.87 / 6.15, 1e-9)
+_g = MI.plausibility_flag(1.0e-4, 58000.0, 0.01, median_bar_range_rel=6.15e-4)
+ok("guardia: 1bp su BTC (lo spread VERO) viene ACCETTATA", _g["plausible"] is True)
+ok("guardia: e passa per la B, non per la A", _g["coverage"] == "B only")
+
+# il numero che decide il verdetto: soglia di ribaltamento
+_f = lambda pen: 0.872 * 6.0 - (1 - 0.872) * pen
+close("sign_flip: il penalty del box si ribalta a 40.9c",
+      MI.sign_flip_parameter(_f, 0.0, 100.0), 40.875, 0.05)
+ok("sign_flip: None se non cambia segno nell'intervallo",
+   MI.sign_flip_parameter(_f, 0.0, 10.0) is None)
+_bp = MI.borrowed_parameter("penalty", 9.0, "README terzo", _f, 0.0, 50.0)
+ok("in prestito non misurato -> NON consegnare il verdetto", "NON consegnare" in _bp["deliverable"])
+_bm = MI.borrowed_parameter("penalty", 9.0, "README terzo", _f, 0.0, 50.0, measured=44.3)
+ok("in prestito misurato -> verdetto negativo", _bm["verdict_at_used"] == "negative")
+ok("in prestito: segnala la differenza di categoria", "CATEGORIA" in _bm.get("note", ""))
+
+# breadth: rifiutare la formula con rho <= 0
+_rng = random.Random(11)
+_base = [_rng.gauss(0, 1) for _ in range(600)]
+_pos = [[0.7 * _base[i] + 0.7 * _rng.gauss(0, 1) for i in range(600)] for _ in range(6)]
+_rp = PF.effective_breadth(_pos)
+ok("breadth: valida con rho > 0", _rp["valid_as_breadth"] is True and _rp["breadth"] is not None)
+ok("breadth: sta fra 1 e N", 1.0 < _rp["breadth"] < 6.0)
+_x = [_rng.gauss(0, 1) for _ in range(600)]
+_ra = PF.effective_breadth([_x, [-v for v in _x]])
+ok("breadth: due serie che si annullano hanno rho ~ -1", _ra["mean_corr"] < -0.9)
+ok("breadth: RIFIUTA di chiamarla breadth con rho <= 0",
+   _ra["valid_as_breadth"] is False and _ra["breadth"] is None)
+ok("breadth: lo dichiara nella nota", "NON va letta come breadth" in _ra["note"])
+
+# diversificare con mu < 0 peggiora lo Sharpe
+ok("segno: mu > 0 e' sicuro", PF.diversification_sign_check(0.001)["safe_to_diversify"] is True)
+_bd = PF.diversification_sign_check(-0.0004)
+ok("segno: mu < 0 avverte", _bd["safe_to_diversify"] is False and "PEGGIORA" in _bd["note"])
+
+
+# ============================================================ v1.6 — le affermazioni generate
+# Ogni assert riproduce una frase REALMENTE consegnata e sbagliata (lug-ago 2026). Se uno
+# fallisce, la funzione non impedisce piu' l'errore che esiste per impedire.
+print("\n-- v1.6: la prosa generata dai numeri --")
+
+# "11.71 resta sotto 8.37" — scritto due righe sotto una tabella che mostrava il contrario
+_c = QC.cmp_(11.71, 8.37, "breadth 7 famiglie", "breadth 34 strumenti")
+ok("cmp_: dice SOPRA quando a > b", "SOPRA" in _c)
+ok("cmp_: non dice SOTTO", "SOTTO" not in _c)
+ok("cmp_: simmetrico", "SOTTO" in QC.cmp_(8.37, 11.71, "x", "y"))
+ok("cmp_: uguaglianza riconosciuta", "UGUALE" in QC.cmp_(2.0, 2.0, "x", "y"))
+ok("cmp_: riporta entrambi i valori", "11.71" in _c and "8.37" in _c)
+
+# "3.50 e' la media del rumore" quando la media era 3.013
+ok("rel: soglia falsa e' marcata", "NON regge" in QC.rel(3.503, "<=", 3.013, "sqrt(2 ln N)"))
+ok("rel: soglia vera passa", "VERO" in QC.rel(2.02, ">=", 2.0, "t"))
+ok("rel: nessun avviso se vera", "NON regge" not in QC.rel(2.02, ">=", 2.0, "t"))
+try:
+    QC.rel(1.0, ">", 2.0, "x", raise_on_fail=True); _raised = False
+except QC.ClaimError:
+    _raised = True
+ok("rel: solleva ClaimError se richiesto", _raised)
+
+# "aggiornata la casella del gate" quando grep -c diceva 0
+ok("rel: postcondizione a zero e' falsa", "NON regge" in QC.rel(0, ">", 0, "occorrenze grep"))
+
+# "salva il 60-70%" quando la misura diceva 25%
+_a = QC.audit("il coordinatore salva il 60-70% dei costi", {"risparmio": 25.0})
+ok("audit: prende i numeri inventati", _a["ok"] is False)
+ok("audit: li elenca", 60.0 in _a["untraceable"])
+_b = QC.audit("il t vale 2.02 contro una soglia di 1.6", {"t": 2.02, "soglia": 1.6})
+ok("audit: passa se ogni numero e' tracciabile", _b["ok"] is True)
+ok("audit: tollera percentuali (0.25 vs 25)", QC.audit("il 25%", {"q": 0.25})["ok"] is True)
+
+# variazione col segno giusto
+ok("pct_change: un calo si chiama calo", "cala" in QC.pct_change(25, 68, "risparmio"))
+ok("pct_change: una crescita si chiama crescita", "aumenta" in QC.pct_change(68, 25, "x"))
+
+# il verdetto si deriva dai criteri dichiarati, non si sceglie
+_v = QC.verdict({"t": 0.68, "floor": -1.02},
+                [("t sotto 1.6", lambda m: m["t"] < 1.6, "DECIDIBILE-NEGATIVO"),
+                 ("floor negativo", lambda m: m["floor"] < 0, "NON ESTABLISHED")])
+ok("verdict: applica il primo criterio che scatta", _v["verdict"] == "DECIDIBILE-NEGATIVO")
+ok("verdict: dichiara quale", _v["matched"].startswith("t sotto"))
+_v2 = QC.verdict({"t": 3.0}, [("t sotto 1.6", lambda m: m["t"] < 1.6, "NEG")])
+ok("verdict: default se nessun criterio scatta", _v2["verdict"] == "NON DECIDIBILE")
+ok("verdict: un criterio rotto non passa in silenzio",
+   QC.verdict({}, [("chiave assente", lambda m: m["manca"] < 1, "X")])["verdict"] == "NON DECIDIBILE")
+
+
+# ══════════════════════════════════ ndarray attraversa il confine lista (R13)
+# Errore REALE del 2026-08-10: bootstrap(block=5) su un ndarray. Nel ramo di avvolgimento
+# `x[i:] + x[:k]` il `+` deve CONCATENARE; su un ndarray e' una SOMMA elementwise. Quando le
+# due fette hanno lunghezza diversa esplode — ed e' il caso fortunato. Quando hanno la stessa
+# lunghezza (o una delle due e' lunga 1, e allora numpy trasmette) somma i numeri e restituisce
+# una banda plausibile e SBAGLIATA, senza alcun errore. Il tipo dichiarato non cambia mai.
+import numpy as _np
+_arr = _np.array([1.0, -2.0, 3.0, -1.0, 2.0, 0.5, -0.5, 1.5, -1.5, 2.5])
+_lst = [float(v) for v in _arr]
+_ba = S.bootstrap(_arr, stat=_np.mean, reps=200, seed=3, block=4)
+_bl = S.bootstrap(_lst, stat=_np.mean, reps=200, seed=3, block=4)
+ok("bootstrap: ndarray con blocchi non esplode", isinstance(_ba["p05"], float) or _ba["p05"] == _ba["p05"])
+ok("bootstrap: ndarray e lista danno lo STESSO risultato", abs(_ba["p50"] - _bl["p50"]) < 1e-12)
+ok("bootstrap: la banda resta dentro l'intervallo dei dati",
+   min(_lst) <= _ba["p05"] <= max(_lst) and min(_lst) <= _ba["p95"] <= max(_lst))
+_ja = S.jackknife(_arr, stat=_np.mean)
+_jl = S.jackknife(_lst, stat=_np.mean)
+ok("jackknife: ndarray non esplode e coincide con la lista",
+   abs(_ja["full"] - _jl["full"]) < 1e-12 and _ja["sign_survives"] == _jl["sign_survives"])
+import qmontecarlo as QMC
+_ma = QMC.surrogate_paths(_arr, model="block_bootstrap", block=4, reps=100, seed=3, drift_zero=False)
+ok("surrogate_paths: block_bootstrap con drift_zero=False su ndarray non esplode",
+   isinstance(_ma, dict))
+
 # ══════════════════════════════════ summary
 print(f"\n{'='*66}\nquant-rigor test suite\n{'='*66}")
 for f in FAIL:
     print(f"  FAIL  {f}")
+
 print(f"\n  passed {len(PASS)} · failed {len(FAIL)}")
 print(f"  {'ALL GREEN' if not FAIL else 'SUITE RED — fix before shipping'}")
-sys.exit(1 if FAIL else 0)

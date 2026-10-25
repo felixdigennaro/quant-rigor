@@ -1,5 +1,128 @@
 # Changelog
 
+## v1.6 — le affermazioni si generano, non si scrivono (2026-08-01)
+
+Nata dal fallimento documentato delle regole in prosa. Cinque frasi consegnate contraddicevano
+una tabella stampata **due righe sopra**; le quattro regole scritte per impedirlo (R10, R11,
+G8, G9) sono state violate tutte entro 48 ore. Le guardie eseguibili, nello stesso periodo,
+hanno preso ogni bug.
+
+### Nuovo — `scripts/qclaim.py` (formule 65-67) e `SKILL.md §0b G10`
+- `cmp_` — la frase di confronto generata dai valori: non può invertirsi per distrazione
+- `rel` — verifica di soglia che scrive sé stessa, con `ClaimError` opzionale
+- `verdict` — deriva il verdetto dai criteri **dichiarati prima**, invece di sceglierlo dopo
+- `audit` — marca ogni numero della bozza non tracciabile a una quantità calcolata
+- `pct_change` — variazione col segno giusto (niente "aumenta del 25%" su un calo)
+
+### Correzione — `qportfolio.effective_breadth`
+Avvertenza esplicita: `N/(1+(N-1)ρ)` è la dimensione efficace per la **varianza di una media**;
+trasportarla alla soglia sul **massimo** in multiple testing è un'euristica, non un risultato.
+Per la penalità da ricerca si usa RAS, che la misura invece di dedurla da un ρ ipotizzato.
+*(Correzione arrivata da una sessione parallela che ha ricalcolato invece di fidarsi.)*
+
+### Test
+343 → **374 asserzioni, tutte verdi**. Ogni nuovo test riproduce una frase realmente
+consegnata e sbagliata.
+
+
+## v1.5 — le guardie contro il fallimento silenzioso (2026-07-30)
+
+Nata da una sessione in cui **nove errori miei** sono arrivati fino all'output, e nessuno di
+essi ha prodotto un errore a runtime. Tutti erano della stessa famiglia: un controllo che non
+puo' scattare, una regola che non puo' sparare, un numero che non ho misurato io.
+
+**Chiude il buco complementare a v1.4:** v1.4 sapeva misurare il costo; v1.5 sa accorgersi
+quando la misura non c'e' stata.
+
+### Nuovo — sezione `SKILL.md §0b`, nove guardie in testa all'ordine delle operazioni
+G1 soglia raggiungibile · G2 tasso di eventi · G3 scala log · G4 due guardie di plausibilita'
+con applicabilita' · G5 il numero in prestito · G6 breadth con rho negativa · G7 il segno prima
+della diversificazione · G8 hai scaricato quello che credi · G9 la prosa contro la tabella.
+
+### Nuovo — `qstats.py` (formule 60-62)
+- `reachable_threshold` — |z|max = `sqrt(W-1)` (pop) o `(W-1)/sqrt(W)` (camp.). Con W=4 una
+  soglia |z|>2 e' irraggiungibile: la strategia stava in posizione lo 0.0% del tempo **senza
+  errori**. Propone la finestra minima.
+- `event_rate_check` — il tasso osservato contro quello inteso. Ha preso due regole
+  "una al giorno" che ne facevano 7.5 (5 492 cambi/anno invece di 730).
+- `log_to_simple` — conversione obbligatoria prima di pubblicare: −0.652 log = **−48%**, non −65%.
+
+### Nuovo — `qmicro.py` (formula 63)
+- `plausibility_flag` **riscritta**: seconda guardia fisica (`stima/range_barra > 0.5` e'
+  impossibile) piu' l'**applicabilita'** della prima. Su BTC anche lo spread vero di 1bp
+  implica 580 tick, quindi la guardia a tick produceva un **falso positivo**: ora si dichiara
+  non applicabile e, se nessuna guardia si applica, la funzione **non emette giudizio**.
+  Corretto anche un numero sbagliato nel docstring precedente (53 tick, non 178).
+- `sign_flip_parameter` — bisezione sulla soglia a cui la conclusione cambia segno.
+- `borrowed_parameter` — registra un parametro di terzi e **blocca la consegna del verdetto**
+  se il ribaltamento cade nell'intervallo plausibile. Segnala le differenze di **categoria**,
+  non solo di grandezza.
+
+### Nuovo — `qportfolio.py` (formula 64)
+- `effective_breadth` — **rifiuta** di chiamare breadth la formula quando `rho <= 0` (dava
+  11.71 su 7) e riporta la firma della cancellazione: `rho <= 0` insieme a PC1 alta.
+- `diversification_sign_check` — con `mu <= 0` diversificare **peggiora** lo Sharpe
+  (misurato: 7 gambe a media −0.87 → aggregato −2.74).
+
+### Test
+307 → **343 asserzioni, tutte verdi**. Ogni nuovo test riproduce un errore realmente commesso.
+Due dei nuovi test hanno **fallito alla prima esecuzione** e hanno scoperto la questione
+dell'applicabilita' della guardia A — il caso in cui respingeva una stima corretta.
+
+
+## v1.4 — microstructure, costs, correlated-search correction, mean reversion
+
+Added after studying four public repositories (provenance in
+`references/08-microstructure-costs.md`): machine-learning-for-trading,
+Financial-Models-Numerical-Methods, awesome-quant, Computational-Finance-Course.
+
+**Closes the biggest hole in the package: it could measure uncertainty but not cost.**
+
+### New — `scripts/qmicro.py` (formulas 50-54)
+- `roll_spread` — Roll (1984), with a *physical* guard: float rounding on a deterministic
+  series produces alternating differences and thus a spuriously negative covariance, so a
+  sign test alone is not enough.
+- `corwin_schultz_spread` / `_median` — Corwin-Schultz (2012) high-low estimator; preferred
+  on OHLC bars because it does not break on trending data.
+- `bounce_check` — the test that settles short-horizon reversion: if the implied spread is of
+  the order of one tick, the reversion **is** the cost of harvesting it.
+- `cost_cliff`, `max_trade_frequency`, `required_edge_per_trade` — the frequency ceiling
+  implied by a target net Sharpe. Run before building any intraday system.
+- `decompose_slippage` — splits a gap between theoretical and realised P&L into entry slip,
+  exit slip, commission and residual. Three components, three different fixes.
+
+### New — `scripts/qpairs.py` (formulas 55-59)
+- `ou_half_life`, `ou_fit` — half-life sets the trade count and therefore the cost hurdle;
+  compute it before the backtest, not after.
+- `hurst` — second moment about zero (the definition), not variance about the mean. Using the
+  variance silently removes drift and returns H≈0 for a pure trend.
+- `adf_stat` — returns the statistic and the critical values, deliberately **no p-value**:
+  the null distribution is non-standard and a fabricated p-value is false precision.
+- `engle_granger` — with the correct, more severe EG critical values (5%: −3.34 vs −2.86).
+- `kalman_hedge_ratio` — time-varying beta, and a warning when beta drifts monotonically,
+  which means the relationship is dying rather than oscillating.
+- `pair_report` — one call, ending in estimated trades/year and annual cost.
+
+### New — RAS in `scripts/qvalidate.py` (formula 38)
+- `rademacher_complexity`, `massart_bound`, `effective_trials`, `ras_sharpe_adjustment`.
+- Why: the Deflated Sharpe corrects for the *number* of trials assuming independence. A real
+  parameter sweep produces highly *correlated* variants, so DSR over-penalises. Measured on
+  40 synthetic variants over T=1000: correlated family → 1.1 effective trials; independent
+  family → 10.4. Report `effective_trials`, not the raw configuration count.
+
+### Protocol
+- New §8b "COST IS A MEASUREMENT, NOT AN ASSUMPTION" — five steps before publishing any net
+  figure; any unmeasured cost stays marked `⚠ assumed` and every dependent conclusion is
+  stress-tested at 2×.
+
+### Tests: 255 → 303 assertions, all green
+Four new tests failed on first run. **The estimators were right; the tests were wrong** —
+they asserted a property of a single realisation of a 5%-level test, which fails 5% of the
+time by construction. Rewritten as calibration checks over many replications. Measured
+afterwards: ADF false-positive rate 3.3% at the 5% threshold; half-life median 6.79 over 200
+replications against a closed form of 6.58. **Rule now encoded: to test a statistical
+procedure, test its operating characteristics, never a single draw.**
+
 Versioning: MAJOR.MINOR.PATCH. MAJOR changes the protocol's steps or verdict semantics; MINOR adds
 formulas, modules or functions; PATCH fixes correctness or presentation.
 

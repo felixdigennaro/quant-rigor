@@ -9,6 +9,7 @@ Reference notes: references/05-validation.md (formulas 31-37).
     import sys; sys.path.insert(0,'<skill>/scripts')
     from qvalidate import deflated_sharpe, pbo, newey_west_se, purged_kfold_splits
 """
+import random
 import math
 import statistics as st
 from itertools import combinations
@@ -309,6 +310,110 @@ def report(returns, n_trials=1, sd_of_trial_sharpes=None, label="strategy"):
         d = deflated_sharpe(sr, n, n_trials, sdt, sk, ku)
         L.append(f"  best-of-{n_trials}: hurdle SR0 {d['sr0']:+.3f} · DSR {d['dsr']:.3f} → {d['verdict']}")
     return "\n".join(L)
+
+
+# ---------------------------------------------------------------- 38. Rademacher / RAS
+# Added after studying stefan-jansen/machine-learning-for-trading ch.16 §16.7.
+# Reference: Paleologo, "Elements of Quantitative Investing" (2024) ch.8;
+#            Mohri, Rostamizadeh & Talwalkar, "Foundations of Machine Learning" (2018).
+
+def rademacher_complexity(series, reps=2000, seed=7, normalise=True):
+    """Empirical Rademacher complexity of a FAMILY of strategy return series.
+
+    R_hat = E_sigma[ max_i (1/T) * sum_t sigma_t * x_t^(i) ],  sigma_t drawn uniform in {-1,+1}
+
+    WHY THIS BEATS THE DEFLATED SHARPE FOR A REAL SEARCH: DSR corrects for the NUMBER of
+    trials assuming they are independent. A real parameter sweep produces highly CORRELATED
+    variants (lookback 11 vs 12, threshold 0.95 vs 1.00). Over a correlated family the
+    supremum is much smaller than over an independent one, so DSR over-penalises and can
+    reject an edge that survives. Rademacher complexity measures the family you ACTUALLY
+    searched, whatever its correlation structure, and is distribution-free.
+
+    `series`: list of equal-length return series (one per configuration tried).
+    With normalise=True each series is scaled to unit sd, so R_hat is in per-period
+    Sharpe units — multiply by sqrt(periods_per_year) to annualise.
+
+    FAILURE MODE: it bounds the OPTIMISM OF THE SEARCH, not the truth of any single
+    strategy. A small R_hat does not make a bad strategy good; it only means your
+    selection procedure did not buy you much by looking.
+    """
+    if not series:
+        return float('nan')
+    T = min(len(s) for s in series)
+    if T < 4:
+        return float('nan')
+    X = []
+    for s in series:
+        s = list(s[:T])
+        if normalise:
+            m = st.mean(s)
+            sd = st.stdev(s) if len(s) > 1 else 0.0
+            s = [(v - m) / sd for v in s] if sd > 0 else [0.0] * T
+        X.append(s)
+    rnd = random.Random(seed)
+    total = 0.0
+    for _ in range(reps):
+        sg = [1.0 if rnd.random() < 0.5 else -1.0 for _ in range(T)]
+        best = max(sum(sg[t] * x[t] for t in range(T)) / T for x in X)
+        total += best
+    return total / reps
+
+
+def massart_bound(n_strategies, n_obs):
+    """Massart's finite-class upper bound on Rademacher complexity: sqrt(2*ln(N)/T).
+
+    The worst case, attained only when the N strategies are mutually uncorrelated. Compare
+    it with the empirical `rademacher_complexity`: the ratio tells you how much your search
+    was really worth. A ratio far below 1 means your variants were near-duplicates and the
+    effective number of independent trials is far smaller than N.
+    """
+    if n_strategies < 1 or n_obs < 1:
+        return float('nan')
+    return math.sqrt(2.0 * math.log(max(n_strategies, 1)) / n_obs)
+
+
+def effective_trials(n_strategies, n_obs, r_hat):
+    """The number of INDEPENDENT trials your correlated search was equivalent to.
+
+    Inverts Massart: N_eff = exp(T * r_hat^2 / 2). Report this instead of the raw count of
+    configurations — quoting "we tried 217 variants" overstates the search when 200 of them
+    were neighbours on the same grid.
+    """
+    if not math.isfinite(r_hat) or r_hat <= 0 or n_obs < 1:
+        return float('nan')
+    return math.exp(min(700.0, n_obs * r_hat * r_hat / 2.0))
+
+
+def ras_sharpe_adjustment(observed_sharpe, series, periods_per_year=252, reps=2000,
+                          seed=7, delta=0.05):
+    """Rademacher Anti-Serum: a distribution-free floor on the true Sharpe after a search.
+
+        theta_true >= theta_observed - 2*R_hat - sqrt(log(1/delta) / (2T))
+
+    All terms are converted to ANNUALISED Sharpe. If the floor is <= 0 the search has not
+    established anything, however good the winner looked.
+
+    Report this ALONGSIDE the Deflated Sharpe, never instead of it: they answer slightly
+    different questions and disagreeing is informative.
+    """
+    T = min(len(s) for s in series) if series else 0
+    if T < 4:
+        return {"error": "need at least 4 observations"}
+    r_hat = rademacher_complexity(series, reps=reps, seed=seed)
+    ann = math.sqrt(periods_per_year)
+    est_err = math.sqrt(math.log(1.0 / delta) / (2.0 * T))
+    floor = observed_sharpe - 2.0 * r_hat * ann - est_err * ann
+    mb = massart_bound(len(series), T)
+    return {"observed_sharpe_ann": observed_sharpe,
+            "rademacher_per_period": r_hat, "rademacher_ann": r_hat * ann,
+            "massart_bound_per_period": mb, "massart_ann": mb * ann,
+            "correlation_discount": (r_hat / mb) if mb > 0 else float('nan'),
+            "effective_trials": effective_trials(len(series), T, r_hat),
+            "n_configurations": len(series), "n_obs": T,
+            "estimation_error_ann": est_err * ann,
+            "sharpe_floor_ann": floor,
+            "verdict": ("established: floor above zero after the search penalty" if floor > 0
+                        else "NOT established — the search penalty consumes the entire edge")}
 
 
 if __name__ == "__main__":
