@@ -1306,6 +1306,51 @@ else:
        _gate2(_cg) is False and _ties >= 80 and _null(_cg, "p") >= (1 + _ties) / 201,
        f"ties {_ties}, p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
 
+    # Gate 5 examines the bucket the sizing would weight UP: the top-score bucket on a rising
+    # relation, the bottom-score bucket on a falling one. It examined the top bucket always,
+    # and on a falling relation that bucket's negative total made top3_share negative and the
+    # gate trivially true: a sized-up setup whose gains lived in 3 periods passed 49 of 50
+    # (lead's measurement, 2026-10-25). It also passes only if that bucket makes money. The
+    # fixtures put a falling 0.1-per-level relation on noise of sd 0.1 and rewrite the
+    # score-0 bucket, whose 3 gains of 10 sit in 3 different jackknife blocks.
+    def _falling(seed, bucket0):
+        g = _np.random.default_rng(seed)
+        sc = g.integers(0, 4, 2000).astype(float)
+        pn = -0.1 * (sc - 1.5) + g.normal(0, 0.1, 2000)
+        low = sc == 0.0
+        if bucket0 == "three gains":
+            pn[low] = 0.02 + g.normal(0, 0.1, low.sum())
+            pn[_np.flatnonzero(low)[[5, 200, 400]]] = 10.0
+        elif bucket0 == "spread gains":
+            pn[low] = 0.2 + g.normal(0, 0.1, low.sum())
+        elif bucket0 == "all buckets lose":
+            pn -= 0.8
+        return sc, pn
+
+    def _gate5(res):
+        return res.get("gates", {}).get("5_not_concentrated", res.get("error", "missing"))
+
+    _cg = _gate(*_falling(5, "three gains"), preregistered=True)
+    _c = _cg.get("concentration", {})
+    ok("confluence_gate: a falling relation whose sized-up bucket owes its gains to 3 periods fails gate 5 on that bucket",
+       _gate5(_cg) is False and _c.get("bucket") == "bottom" and _c.get("bucket_mean", 0.0) > 0
+       and _c.get("sign_survives_all") is True and _c.get("top3_share", 0.0) >= 0.5,
+       f"gate {_gate5(_cg)}, bucket {_c.get('bucket')}, mean {_c.get('bucket_mean')}, top3 {_c.get('top3_share')}")
+    _cg = _gate(*_falling(5, "spread gains"), preregistered=True)
+    _c = _cg.get("concentration", {})
+    ok("confluence_gate: the same relation with the gains spread passes gate 5 on the bottom bucket",
+       _gate5(_cg) is True and _c.get("bucket") == "bottom",
+       f"gate {_gate5(_cg)}, bucket {_c.get('bucket')}, mean {_c.get('bucket_mean')}, top3 {_c.get('top3_share')}")
+    _cg = _gate(*_falling(5, "all buckets lose"), preregistered=True)
+    _c = _cg.get("concentration", {})
+    ok("confluence_gate: a base that loses in every bucket fails gate 5: an edge you size up must make money",
+       _gate5(_cg) is False and _c.get("bucket_mean", 0.0) < 0 and _c.get("sign_survives_all") is True,
+       f"gate {_gate5(_cg)}, bucket {_c.get('bucket')}, mean {_c.get('bucket_mean')}")
+    _c = _gate(_sc, _pn, preregistered=True).get("concentration", {})
+    ok("confluence_gate: a rising relation is examined on its top bucket, and the record says so",
+       _c.get("bucket") == "top" and _c.get("bucket_n", 0) > 0 and _c.get("bucket_mean", 0.0) > 1.0,
+       f"bucket {_c.get('bucket')}, n {_c.get('bucket_n')}, mean {_c.get('bucket_mean')}")
+
     # Persistent data, no effect: P&L AR(0.6), score = quartile of an AR(0.97) series. The
     # slope t is inflated on such data, so the null must be too. Blocks of 25 keep the
     # persistence; an iid shuffle destroys it (q95 ratio 1.46 to 2.30 over 40 series).

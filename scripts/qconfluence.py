@@ -44,8 +44,10 @@ THE FIVE GATES, in order. Each can kill the finding, and killing early saves the
      Same frozen rule, different instrument. This is what killed the real case above.
 
   5. CONCENTRATION.
-     Does the effect live in 1-3 periods? Jackknife it. A confluence that only works on
-     three days is a story about three days.
+     Does the effect live in 1-3 periods? Jackknife the bucket the sizing would weight UP
+     (top score when the slope rises, bottom score when it falls): it must make money,
+     keep its sign on every deletion, and not owe half its total to three periods. A
+     confluence that only works on three days is a story about three days.
 
 ONLY IF ALL FIVE PASS does sizing follow — and then the weight comes from the fitted slope,
 capped, never from the ratio of bucket means (which is unbounded and noisy at the extremes).
@@ -388,7 +390,8 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     `replication`   (score, pnl) from a DIFFERENT instrument, rule frozen (gate 4)
 
     Gate 2 is two-sided, the permutation p-value of |t| under its null, so a falling
-    dose-response can pass it as it can pass gates 1, 3 and 4. With neither `build_score`
+    dose-response can pass it as it can pass gates 1, 3 and 4; gate 5 then examines the
+    bottom-score bucket, the one such a sizing would weight up. With neither `build_score`
     nor `preregistered` the gate is not run and the verdict is NON DECIDIBILE. `n_rep` must
     be at least 19 for the p-value to reach 0.05.
     """
@@ -426,11 +429,31 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     else:
         res["gates"]["4_replicates"] = None
 
-    top = score >= np.quantile(score, 1 - 1.0 / n_buckets)
-    jk = jackknife_sign(pnl[top])
-    res["concentration"] = jk
-    res["gates"]["5_not_concentrated"] = bool(jk.get("ok") and jk["sign_survives_all"]
-                                              and jk["top3_share"] < 0.5)
+    # Gate 5 examines the bucket the sizing would weight UP. Examining the top-score bucket
+    # on a falling relation jackknifed the setup the sizing would weight DOWN, whose negative
+    # total made top3_share negative and the gate trivially true: gains living in 3 periods
+    # passed 10 of 10 datasets (2026-10-25).
+    slope = dr.get("slope_per_sd", float("nan"))
+    if slope != slope:
+        res["concentration"] = {"ok": False, "note": "senza una pendenza dose-risposta non si "
+                                                     "sa quale bucket il dimensionamento "
+                                                     "peserebbe di più"}
+        res["gates"]["5_not_concentrated"] = None
+    else:
+        fs = score[np.isfinite(score)]
+        if slope >= 0:
+            side, sel = "top", score >= np.quantile(fs, 1 - 1.0 / n_buckets)
+        else:
+            side, sel = "bottom", score <= np.quantile(fs, 1.0 / n_buckets)
+        v = pnl[sel]
+        v = v[np.isfinite(v)]
+        jk = jackknife_sign(v)
+        jk.update({"bucket": side, "bucket_n": int(len(v)),
+                   "bucket_mean": float(v.mean()) if len(v) else float("nan")})
+        res["concentration"] = jk
+        res["gates"]["5_not_concentrated"] = bool(jk.get("ok") and jk["bucket_mean"] > 0
+                                                  and jk["sign_survives_all"]
+                                                  and jk["top3_share"] < 0.5)
 
     passed = [v for v in res["gates"].values() if v is True]
     failed = [k for k, v in res["gates"].items() if v is False]
