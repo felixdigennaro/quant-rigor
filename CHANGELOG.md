@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.6.2, check per qconfluence e qregime, e due difetti che hanno trovato (2026-10-25)
+
+Fino a qui nessun check toccava `qconfluence` e `qregime`. La suite ne ha 45 nuovi, tutti
+contro riferimenti indipendenti: forme chiuse calcolate nel test, effetti piantati nei dati, una
+scansione delle finestre rifatta con la sola libreria standard, il controllo di potenza del
+modulo. I due moduli importano numpy, quindi senza numpy le loro sezioni compaiono come `SKIP`.
+
+### Correzione: il cancello 2 di `confluence_gate` dipendeva dalla media della strategia base
+Confrontava il t della pendenza, che non vede la media della strategia, con il nullo di
+`search_null`, che misura il t della media di ogni regola contro zero. Su 40 serie per riga, un
+effetto vero passava il cancello nello 0% dei casi con media base 1.0, e il rumore puro nel
+100% con media -0.3. Ora il cancello centra il P&L prima di chiamare `search_null`: l'effetto
+vero passa nel 100% dei casi con media 0, 0.375 e 1.0, il rumore nello 0% con 0, -0.3 e +0.3.
+`search_null` non cambia; la sua docstring e §5b dicono di centrare quando lo si usa da solo.
+
+### Correzione: `_spearman` sui pareggi
+Usava ranghi ordinali, e un conteggio di confluenze è quasi tutto pareggi: su un conteggio 0-3
+dava 0.2479 contro 0.2623 del manuale. Ora usa i ranghi medi. Il campo è solo informativo,
+nessun cancello lo legge.
+
+### Non toccato
+Il cancello 2 resta a una coda (`slope_t > q95`) mentre i cancelli 1, 3 e 4 accettano anche una
+pendenza negativa. Su 40 serie con pendenza -0.25, e media base 0, 1.0 o -0.3, il cancello 1
+passa 40 volte su 40 e il cancello 2 nessuna: una confluenza che peggiora il P&L non arriva mai
+a «utilizzabile». Se debba poterci arrivare è una scelta, non un difetto.
+
 ## v1.6.1, la suite sa fallire (2026-10-25)
 
 `tests/test_all.py` stampava `SUITE RED` e usciva comunque con 0, quindi un check di CI

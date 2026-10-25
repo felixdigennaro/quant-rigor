@@ -215,7 +215,8 @@ Load `references/` files as needed — **start with `routing-table.md`** (questi
 The scripts ship with `tests/test_all.py`, which checks them against independent references
 (published t-tables, known normal quantiles, closed forms) plus degenerate-input cases. It prints
 the passed and failed counts and exits 1 if any check fails. `qconfluence` and `qregime` import
-numpy and have no checks there yet. Run it first.
+numpy, so their checks run only where numpy is installed and are listed as SKIP elsewhere.
+Run it first.
 
 ---
 
@@ -482,7 +483,9 @@ hypotheses with an economic mechanism over a wide automatic sweep.
    harder. It is also the only shape that answers the sizing question — you need the **slope**,
    not one bucket's mean.
 2. **Null calibration of the search** (`search_null`) — shuffle the P&L, re-run the *entire*
-   search, compare against that distribution's 95th percentile.
+   search, compare against that distribution's 95th percentile. `search_null` tests each rule's
+   mean P&L against zero, so centre the P&L first, as `confluence_gate` does. Uncentred, a
+   profitable base strategy raises the bar and a losing one lowers it, whatever the rule.
 3. **Out-of-sample** — select on the first part, apply frozen to the rest. No re-tuning.
 4. **Independent replication** — same frozen rule, different instrument. In the measured case
    this is the gate that killed it, after gates 1-3 all passed.
