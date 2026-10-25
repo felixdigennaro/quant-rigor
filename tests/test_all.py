@@ -1075,11 +1075,23 @@ else:
         return (1 + sum(v >= sn.get("real_abs_t", float("inf")) for v in a)) / (1 + len(a))
 
     def _rule(res):
-        """gate 2 is (p <= 0.05); p is the permutation p-value of the n_rep exposed draws;
-        q95 and median are those draws' percentiles (numpy's linear interpolation)"""
+        """gate 2 is (p <= 0.05); p is the permutation p-value of the exposed draws; q95 and
+        median are those draws' percentiles (numpy's linear interpolation). Pre-registered,
+        the draws are the n_rep shuffles. Replayed, they are the shuffles on which the search
+        found something: n_rep of them, or at least 19 when 10·n_rep shuffles ran out first,
+        and every shuffle tried is either a draw or a constant rebuild"""
         sn = res.get("search_null", {})
         a = sorted(float(v) for v in sn.get("null_abs_t", []))
-        if not a or len(a) != sn.get("n_rep"):
+        n_rep = sn.get("n_rep", 0)
+        if not a:
+            return False
+        if sn.get("method") == "replay":
+            drawn, const = sn.get("n_drawn", -1), sn.get("n_rebuilt_constant", -1)
+            if const < 0 or drawn != len(a) + const or not (
+                    (len(a) == n_rep and drawn <= 10 * n_rep)
+                    or (19 <= len(a) < n_rep and drawn == 10 * n_rep)):
+                return False
+        elif len(a) != n_rep:
             return False
         pos = 0.95 * (len(a) - 1)
         q95 = a[int(pos)] + (pos - int(pos)) * (a[int(pos) + 1] - a[int(pos)])
@@ -1128,6 +1140,14 @@ else:
     _cg = _gate(_pn, _pn, preregistered=True)
     ok("confluence_gate: a P&L that is an exact linear function of the score has no slope t, so gate 2 is not run",
        _not_run(_cg, "non è definito"), str(_cg.get("search_null")))
+    # 10 periods in 5 blocks of 2, the P&L the score with its first two blocks swapped: the
+    # draw that swaps them back (index 138 of 200 at seed 0) fits the score exactly, in
+    # integer arithmetic, and has no t. Pre-registered, that draw is not a 0 either.
+    _cg = _gate(_np.arange(10, dtype=float),
+                _np.array([2.0, 3.0, 0.0, 1.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+                preregistered=True, block=2)
+    ok("confluence_gate: a pre-registered draw whose P&L fits the score exactly has no slope t: gate 2 is not run, with a note naming the draw",
+       _not_run(_cg, "non è definito") and _not_run(_cg, "estrazione"), str(_cg.get("search_null")))
     _cg = _gate(_sc, _pn, preregistered=True, n_rep=18)
     ok("confluence_gate: n_rep=18 cannot reach p = 0.05, so gate 2 is not run with a note naming n_rep",
        _not_run(_cg, "n_rep"), str(_cg.get("search_null")))
@@ -1278,10 +1298,15 @@ else:
        f"row 0 on in {int(_rows[0].sum())} of {int(_was[0].sum())} cells, gate {_gate2(_cg)}")
 
     # A threshold search: the score counts the rules whose on-vs-off t on the train part is
-    # above 3. On shuffled noise it mostly finds nothing, the rebuilt score is constant and
-    # has no slope: that draw is |t| = 0, the search found nothing, not a missing draw.
-    # Counted as missing, a planted effect of |t| 11 came back NON DECIDIBILE 200 of 200.
-    def _thresh(masks, pnl):
+    # above a threshold. On shuffled noise it often finds nothing and the rebuilt score is
+    # constant: that shuffle is not a null draw. Counted as |t| = 0 it let noise through on
+    # the datasets where the real search had found something, the only ones the gate is run
+    # on: 89 of 928 runs at threshold 2.5, 194 of 503 at 3.0, 191 of 191 at 3.5 (independent
+    # re-review, 2026-10-25). The gate draws until n_rep shuffles have a score with variance,
+    # within 10·n_rep, and the record counts both. At threshold 3 the search finds something
+    # on 12-14% of shuffled noise P&Ls (1000 shuffles on each of seeds 400-404, 2026-10-25);
+    # on seed 320 the 100 draws took 873 shuffles, 773 of them constant.
+    def _thresh(masks, pnl, thr=3.0):
         on = masks[:, :1200].astype(float)
         off = 1.0 - on
         p = pnl[:1200]
@@ -1289,16 +1314,49 @@ else:
         m1, m0 = (on @ p) / n1, (off @ p) / n0
         v1 = ((on @ (p ** 2)) / n1 - m1 ** 2) * n1 / (n1 - 1)
         v0 = ((off @ (p ** 2)) / n0 - m0 ** 2) * n0 / (n0 - 1)
-        return masks[(m1 - m0) / _np.sqrt(v1 / n1 + v0 / n0) > 3].sum(0).astype(float)
+        return masks[(m1 - m0) / _np.sqrt(v1 / n1 + v0 / n0) > thr].sum(0).astype(float)
 
     _mk, _pn, _ = _searched(320, 0.3)
     _sc = _thresh(_mk, _pn)
     _cg = _gate(_sc, _pn, masks=_mk, build_score=_thresh, n_rep=100)
-    ok("confluence_gate: a threshold search with a planted effect passes gate 2, the shuffles that find nothing counted as |t| = 0",
-       _sc.max() == 3 and _gate2(_cg) is True and 50 <= _null(_cg, "n_rebuilt_constant") < 100
-       and _rule(_cg),
+    _sn = _cg.get("search_null", {})
+    ok("confluence_gate: a threshold search with a planted effect passes gate 2 on 100 found draws, the shuffles that find nothing skipped and counted",
+       _sc.max() == 3 and _gate2(_cg) is True and len(_sn.get("null_abs_t", [])) == 100
+       and _sn.get("n_rebuilt_constant", 0) > 0 and _rule(_cg),
        f"found {int(_sc.max())} rules, gate {_gate2(_cg)}, |t| {_null(_cg, 'real_abs_t'):.2f}, "
-       f"p {_null(_cg, 'p')}, constant rebuilds {_null(_cg, 'n_rebuilt_constant')}")
+       f"p {_null(_cg, 'p')}, draws {len(_sn.get('null_abs_t', []))} of {_sn.get('n_drawn')} shuffles, "
+       f"constant {_sn.get('n_rebuilt_constant')}")
+
+    # At threshold 3.5 the search finds something on about 2.3% of shuffled noise P&Ls (19-30
+    # of 1000 on seeds 400-404) and on 3 of 200 noise datasets (seeds 400-599, 2026-10-25).
+    # Seed 438 is one of the 3: the real search found one rule. With n_rep=50 its 500
+    # shuffles yield 11 found draws (8-13 over gate seeds 0-9), under the 19 the p-value
+    # needs: the gate is not run. With n_rep=100 the 1000 shuffles yield 16-26: not run on 3
+    # gate seeds of 10, p 0.48-0.64 on the other 7, never a pass. With the constant rebuilds
+    # counted as |t| = 0 it passed.
+    _mk, _pn, _ = _searched(438, 0.0)
+    _sc = _thresh(_mk, _pn, 3.5)
+    _cg = _gate(_sc, _pn, masks=_mk, build_score=lambda m, p: _thresh(m, p, 3.5), n_rep=50)
+    ok("confluence_gate: a strict threshold search on noise that found a rule, with too few shuffles on which it finds anything, leaves gate 2 not run with a note on the count",
+       _sc.max() == 1 and _not_run(_cg, "troppo pochi"),
+       f"found {int(_sc.max())} rules, gate {_gate2(_cg)}, {_cg.get('search_null')}")
+
+    # Conditional calibration, the measurement that exposed the defect: threshold 2.5 on
+    # noise, only the datasets where the real search found something. The first 20 such
+    # datasets from seed 500 (seeds 501-542) pass 0; 200 of them (seeds 501-895) pass 8,
+    # at the nominal 5/101 (2026-10-25). A calibrated gate exceeds 5 of 20 with probability
+    # 0.03%. With the constant rebuilds counted as |t| = 0 the re-review measured 9.6%.
+    _v, _s = [], 500
+    while len(_v) < 20:
+        _mk, _pn, _ = _searched(_s, 0.0)
+        _sc = _thresh(_mk, _pn, 2.5)
+        if _sc.max() > 0:
+            _v.append(_gate2(_gate(_sc, _pn, masks=_mk, n_rep=100,
+                                   build_score=lambda m, p: _thresh(m, p, 2.5))))
+        _s += 1
+    ok("confluence_gate: a threshold search on noise, on the datasets where it found something, passes gate 2 at most 5 times in 20",
+       all(isinstance(v, bool) for v in _v) and sum(v is True for v in _v) <= 5,
+       f"{_v}, last seed {_s - 1}")
 
     # Noise whose variance rises with a skewed 0-3 count (sd 1, 1.2, 1.6, 2.5 at p .5, .3,
     # .15, .05), pre-registered, mean 0. The plain OLS slope t is inflated on it: 68 of 400

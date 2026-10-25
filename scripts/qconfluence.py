@@ -33,9 +33,12 @@ THE FIVE GATES, in order. Each can kill the finding, and killing early saves the
      Shuffle the P&L in blocks, rebuild the score with the SAME function that built it,
      recompute the SAME slope t (HC3-studentised, so a P&L whose variance grows with the
      score does not inflate it). Many times. The permutation p-value
-     (1 + #{|t_null| >= |t_real|}) / (1 + n_rep) must be <= 0.05. A score fixed before
-     looking at the P&L keeps its score and shuffles only the P&L. Given neither the
-     function nor that promise, the gate is not run and the verdict is NON DECIDIBILE.
+     (1 + #{|t_null| >= |t_real|}) / (1 + n_found) must be <= 0.05, over the shuffles on
+     which the search found something: a shuffle whose rebuilt score has no variance is not
+     a null draw, and the gate keeps drawing until n_rep have one, within 10·n_rep. A score
+     fixed before looking at the P&L keeps its score and shuffles only the P&L. Given
+     neither the function nor that promise, the gate is not run and the verdict is NON
+     DECIDIBILE; so is it when too few shuffles find anything.
 
   3. OUT-OF-SAMPLE.
      Select on the first part, apply frozen to the last part. No re-tuning, no second pick.
@@ -243,10 +246,13 @@ def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed)
     The real statistic is the HC3 slope t of `pnl` on `score`. The null shuffles `pnl` in
     blocks and recomputes the same t on the score that `build_score` rebuilds from the
     shuffled P&L, so the null repeats the search and carries its selection bias; a
-    pre-registered score stays fixed. Two-sided, by the permutation p-value
-    (1 + #{|t_null| >= |t_real|}) / (1 + n_rep) <= 0.05. Every way the gate cannot run gets
-    its own note and None, never a verdict: a too-small n_rep, a NaN in the P&L or a block
-    longer than the series are failures of the call, not findings about the data.
+    pre-registered score stays fixed. A shuffle on which the search finds nothing (rebuilt
+    score without variance) is not a null draw: the gate draws until `n_rep` shuffles have
+    one, within 10·n_rep, and needs at least 19. Two-sided, by the permutation p-value
+    (1 + #{|t_null| >= |t_real|}) / (1 + n_found) <= 0.05. Every way the gate cannot run
+    gets its own note and None, never a verdict: a too-small n_rep, a NaN in the P&L, a
+    block longer than the series or too few shuffles on which the search finds anything are
+    failures of the call, not findings about the data.
     """
     def not_run(note):
         return None, {"note": "cancello 2 non eseguito: " + note}
@@ -285,45 +291,61 @@ def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed)
         return not_run("il t della pendenza reale non è definito: il P&L è una funzione "
                        "lineare esatta del punteggio, oppure un solo periodo porta tutta la "
                        "varianza del punteggio")
-    rng = np.random.default_rng(seed)
-    P = np.stack([_block_shuffle(pnl, block, rng) for _ in range(n_rep)])
-    n_const = 0
-    if build_score is None:
-        t_null = _slope_t(score, P)
-    else:
-        t_null = np.empty(n_rep)
-        same = True
-        for k, p in enumerate(P):
-            rb = np.asarray(build_score(_fresh(masks), p.copy()), float)
-            if rb.shape != score.shape or not np.all(np.isfinite(rb)):
-                return not_run(f"sull'estrazione {k} build_score ha restituito un punteggio di "
-                               f"forma {rb.shape} invece di {score.shape}, o con valori non "
-                               f"finiti")
-            same = same and np.array_equal(rb, score)
-            if np.ptp(rb) == 0:
-                n_const += 1       # the search found nothing on this shuffle: no slope, |t| = 0
-                t_null[k] = 0.0
-            else:
-                t_null[k] = _slope_t(rb, p)[0]
-        if same:
-            return not_run("build_score restituisce lo stesso punteggio su ogni P&L permutato: "
-                           "non dipende dal P&L, quindi non ripete la ricerca. Se il punteggio "
-                           "era fissato in anticipo dichiararlo con preregistered=True")
-    if not np.all(np.isfinite(t_null)):
-        k = int(np.flatnonzero(~np.isfinite(t_null))[0])
+
+    def undefined_t(k):
         return not_run(f"sull'estrazione {k} il t della pendenza non è definito: P&L permutato "
                        f"funzione lineare esatta del punteggio ricostruito, o un solo periodo "
                        f"con tutta la sua varianza")
+
+    rng = np.random.default_rng(seed)
+    if build_score is None:
+        t_null = _slope_t(score, np.stack([_block_shuffle(pnl, block, rng)
+                                           for _ in range(n_rep)]))
+        bad = np.flatnonzero(~np.isfinite(t_null))
+        if len(bad):
+            return undefined_t(int(bad[0]))
+    else:
+        # A shuffle on which the search finds nothing is not a null draw. Counted as |t| = 0
+        # it let noise through on the datasets where the real search had found something,
+        # the only ones anyone runs the gate on: 191 of 191 at a strict threshold
+        # (2026-10-25). Only shuffles whose rebuilt score has variance enter the null.
+        found, same, drawn = [], True, 0
+        while len(found) < n_rep and drawn < 10 * n_rep:
+            p = _block_shuffle(pnl, block, rng)
+            rb = np.asarray(build_score(_fresh(masks), p.copy()), float)
+            if rb.shape != score.shape or not np.all(np.isfinite(rb)):
+                return not_run(f"sull'estrazione {drawn} build_score ha restituito un "
+                               f"punteggio di forma {rb.shape} invece di {score.shape}, o con "
+                               f"valori non finiti")
+            same = same and np.array_equal(rb, score)
+            drawn += 1
+            if np.ptp(rb) == 0:
+                continue
+            t = float(_slope_t(rb, p)[0])
+            if not np.isfinite(t):
+                return undefined_t(drawn - 1)
+            found.append(t)
+        if len(found) < 19:
+            return not_run(f"la ricerca trova qualcosa solo su {len(found)} di {drawn} P&L "
+                           f"permutati: troppo pochi per calibrare p a 0.05, ne servono almeno "
+                           f"19 (il budget è 10·n_rep estrazioni)")
+        t_null = np.array(found)
     a = np.abs(t_null)
+    ar = abs(real)
     # A draw equal to the real counts as >=. The identity permutation ties it exactly in the
     # mathematics and only up to a BLAS kernel's rounding in floating point.
-    p = (1 + int((a >= abs(real) * (1 - 1e-9)).sum())) / (1 + n_rep)
+    if build_score is not None and same:
+        return not_run("build_score restituisce lo stesso punteggio su ogni P&L permutato: "
+                       "non dipende dal P&L, quindi non ripete la ricerca. Se il punteggio "
+                       "era fissato in anticipo dichiararlo con preregistered=True")
+    p = (1 + int((a >= ar * (1 - 1e-9)).sum())) / (1 + len(a))
     rec = {"method": "replay" if build_score is not None else "preregistered",
-           "two_sided": True, "block": block, "n_rep": n_rep, "real_abs_t": abs(real),
+           "two_sided": True, "block": block, "n_rep": n_rep, "real_abs_t": ar,
            "p": p, "q95": float(np.percentile(a, 95)), "median": float(np.median(a)),
            "null_abs_t": a}
     if build_score is not None:
-        rec["n_rebuilt_constant"] = n_const
+        rec["n_drawn"] = drawn
+        rec["n_rebuilt_constant"] = drawn - len(a)
     return p <= 0.05, rec
 
 
@@ -396,7 +418,9 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     `masks`         every rule the search considered; `build_score` gets a copy on each call
     `build_score`   `build_score(masks, pnl) -> score`, the function that built `score`.
                     Gate 2 shuffles the P&L in blocks, rebuilds the score from it and
-                    recomputes the same slope t, `n_rep` times
+                    recomputes the same slope t, on `n_rep` shuffles whose rebuilt score has
+                    variance (a shuffle on which the search finds nothing is not a draw;
+                    at most 10·n_rep shuffles are tried)
     `preregistered` True if `score` was fixed before looking at this P&L: gate 2 keeps the
                     score and shuffles only the P&L. Contradicts `build_score`
     `block`         periods per shuffled block (1 is an iid shuffle)
@@ -406,7 +430,8 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     dose-response can pass it as it can pass gates 1, 3 and 4; gate 5 then examines the
     bottom-score bucket, the one such a sizing would weight up. With neither `build_score`
     nor `preregistered` the gate is not run and the verdict is NON DECIDIBILE. `n_rep` must
-    be at least 19 for the p-value to reach 0.05.
+    be at least 19 for the p-value to reach 0.05, and so must the shuffles on which the
+    search finds something.
     """
     if build_score is not None and preregistered:
         raise ValueError("build_score and preregistered=True contradict each other: a score "
