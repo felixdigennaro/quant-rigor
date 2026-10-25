@@ -6,6 +6,10 @@ Fino a qui nessun check toccava `qconfluence` e `qregime`. La suite ne ha 45 nuo
 contro riferimenti indipendenti: forme chiuse calcolate nel test, effetti piantati nei dati, una
 scansione delle finestre rifatta con la sola libreria standard, il controllo di potenza del
 modulo. I due moduli importano numpy, quindi senza numpy le loro sezioni compaiono come `SKIP`.
+Ogni check è stato provato rompendo il codice che copre: 36 mutazioni, tutte prese, e ognuno dei
+45 check diventa rosso sotto almeno una. La prima stesura ne aveva tre che non potevano scattare
+(un detector simmetrico, un conteggio uniforme su cui anche i quantili funzionano, un `KeyError`
+che faceva crollare la suite prima del riepilogo); sono stati riscritti.
 
 ### Correzione: il cancello 2 di `confluence_gate` dipendeva dalla media della strategia base
 Confrontava il t della pendenza, che non vede la media della strategia, con il nullo di

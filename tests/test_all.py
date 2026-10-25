@@ -947,23 +947,24 @@ else:
     _sc = [float(v) for v in range(200)]
     _dr = QF.dose_response(_sc, [2.0 * v for v in _sc])
     close("dose_response: slope per SD of a noiseless line = 2·stdev(score)",
-          _dr["slope_per_sd"], 2.0 * _st.stdev(_sc), 1e-9)
-    ok("dose_response: every observation lands in exactly one bucket", sum(_dr["n"]) == 200, str(_dr["n"]))
+          _dr.get("slope_per_sd", float("nan")), 2.0 * _st.stdev(_sc), 1e-9)
+    ok("dose_response: every observation lands in exactly one bucket", sum(_dr.get("n", [])) == 200, str(_dr.get("n", [])))
     ok("dose_response: a noiseless rising line is monotone up",
-       _dr["monotone_up"] and not _dr["monotone_down"])
-    close("dose_response: Spearman of a monotone line is 1", _dr["spearman"], 1.0, 1e-12)
-    # The trap the module documents: a discrete 0-3 count with a REAL planted effect, which
-    # quantile edges once turned into empty buckets that failed gate 1.
+       _dr.get("monotone_up") and not _dr.get("monotone_down"))
+    close("dose_response: Spearman of a monotone line is 1", _dr.get("spearman", float("nan")), 1.0, 1e-12)
+    # The trap the module documents: a discrete 0-3 count with a REAL planted effect. Skewed
+    # the way confluence counts are (most periods align few conditions), quintile edges come
+    # out 0,0,0,1,1 and merge 1-3 into one bucket; one bucket per value keeps all four.
     _g = _np.random.default_rng(11)
-    _sc = _g.integers(0, 4, 2000).astype(float)
-    _pn = 0.25 * _sc + _g.normal(0, 1, 2000)
+    _sc = _g.choice([0.0, 1.0, 2.0, 3.0], size=4000, p=[0.5, 0.3, 0.15, 0.05])
+    _pn = 0.25 * _sc + _g.normal(0, 1, 4000)
     _dr = QF.dose_response(_sc, _pn)
     ok("dose_response: a discrete 0-3 count gets one bucket per value",
-       _dr["ok"] and len(_dr["buckets"]) == 4, str(_dr.get("n")))
+       _dr.get("ok") and len(_dr.get("buckets", [])) == 4, str(_dr.get("n")))
     ok("dose_response: bucket means within 4 SE of the planted 0.25·k",
-       _dr["ok"] and all(abs(m - 0.25 * k) <= 4 * s for k, (m, s) in enumerate(zip(_dr["buckets"], _dr["se"]))),
+       _dr.get("ok") and all(abs(m - 0.25 * k) <= 4 * s for k, (m, s) in enumerate(zip(_dr.get("buckets", []), _dr.get("se", [])))),
        str(_dr.get("buckets")))
-    ok("dose_response: the planted effect reads as monotone up", _dr["ok"] and _dr["monotone_up"])
+    ok("dose_response: the planted effect reads as monotone up", _dr.get("ok") and _dr.get("monotone_up"))
     ok("dose_response: a value with too few periods is dropped, not kept as nan",
        QF.dose_response([0.0] * 100 + [1.0] * 100 + [2.0] * 100 + [3.0] * 5,
                         [float(i % 7) for i in range(305)]).get("n") == [100, 100, 100])
@@ -988,10 +989,10 @@ else:
     # Swapping each pair of 0..99 makes every |d| = 1, so rho = 1 - 6n/(n(n²-1)).
     _swap = [float(v + 1 if v % 2 == 0 else v - 1) for v in range(100)]
     close("dose_response: Spearman without ties = 1 - 6/(n²-1)",
-          QF.dose_response([float(v) for v in range(100)], _swap)["spearman"], 1 - 6 / (100 ** 2 - 1), 1e-12)
+          QF.dose_response([float(v) for v in range(100)], _swap).get("spearman", float("nan")), 1 - 6 / (100 ** 2 - 1), 1e-12)
     _sl, _pl = [float(v) for v in _sc[:400]], [float(v) for v in _pn[:400]]
     close("dose_response: Spearman with tied scores uses average ranks",
-          QF.dose_response(_sc[:400], _pn[:400])["spearman"], _pearson(_avg_ranks(_sl), _avg_ranks(_pl)), 1e-9)
+          QF.dose_response(_sc[:400], _pn[:400]).get("spearman", float("nan")), _pearson(_avg_ranks(_sl), _avg_ranks(_pl)), 1e-9)
 
     # 20 disjoint rules on centred noise: the best t is the max of 20 t(49), whose quantiles
     # are the t quantiles of 0.5^(1/20) and 0.95^(1/20) (t from z: Abramowitz-Stegun 26.7.5).
@@ -1007,19 +1008,19 @@ else:
         z = _st.NormalDist().inv_cdf(p)
         return z + (z ** 3 + z) / (4 * df)
 
-    close("search_null: median best-of-20 t = max of 20 t(49)", _sn["median"], _t_quantile(0.5 ** (1 / 20), 49), 0.1)
-    close("search_null: 95th percentile of the best-of-20 t", _sn["q95"], _t_quantile(0.95 ** (1 / 20), 49), 0.3)
+    close("search_null: median best-of-20 t = max of 20 t(49)", _sn.get("median", float("nan")), _t_quantile(0.5 ** (1 / 20), 49), 0.1)
+    close("search_null: 95th percentile of the best-of-20 t", _sn.get("q95", float("nan")), _t_quantile(0.95 ** (1 / 20), 49), 0.3)
     ok("search_null: no rule with enough periods is not a verdict",
-       QF.search_null(_mk, _pn0, min_n=51)["ok"] is False)
+       QF.search_null(_mk, _pn0, min_n=51).get("ok") is False)
 
     _jk = QF.jackknife_sign([float(v) for v in range(1, 21)])
-    close("jackknife_sign: worst leave-one-out mean of 1..20 = 190/19", _jk["worst_mean"], 10.0, 1e-12)
-    close("jackknife_sign: best leave-one-out mean of 1..20 = 209/19", _jk["best_mean"], 11.0, 1e-12)
-    close("jackknife_sign: top-3 share of 1..20 = 57/210", _jk["top3_share"], 57 / 210, 1e-12)
-    ok("jackknife_sign: the sign of 1..20 survives every deletion", _jk["sign_survives_all"])
+    close("jackknife_sign: worst leave-one-out mean of 1..20 = 190/19", _jk.get("worst_mean", float("nan")), 10.0, 1e-12)
+    close("jackknife_sign: best leave-one-out mean of 1..20 = 209/19", _jk.get("best_mean", float("nan")), 11.0, 1e-12)
+    close("jackknife_sign: top-3 share of 1..20 = 57/210", _jk.get("top3_share", float("nan")), 57 / 210, 1e-12)
+    ok("jackknife_sign: the sign of 1..20 survives every deletion", _jk.get("sign_survives_all"))
     _jk = QF.jackknife_sign([-1.0] * 19 + [100.0])
     ok("jackknife_sign: one outlier carrying the mean is caught",
-       not _jk["sign_survives_all"] and _jk["worst_mean"] == -1.0)
+       not _jk.get("sign_survives_all") and _jk.get("worst_mean", float("nan")) == -1.0)
 
     # The whole gate, both directions, on base strategies whose own mean is not zero.
     def _book(seed, effect, base, n=2000):
@@ -1064,23 +1065,24 @@ else:
     _xs[300:400] += 0.6
     _ws = QR.window_scan(_xs, 100, n_null=50)
     _ts = [_st.mean(_xs[i:i + 100]) / (_st.stdev(_xs[i:i + 100]) / 10) for i in range(0, 601, 25)]
-    close("window_scan: best window t matches a stdlib scan", _ws["best"], max(_ts), 1e-9)
-    ok("window_scan: the same windows, one every w/4", _ws["n_win"] == len(_ts), f"{_ws['n_win']} vs {len(_ts)}")
-    close("window_scan: share of windows above t = 2", _ws["frac_good"], sum(t > 2 for t in _ts) / len(_ts), 1e-12)
-    ok("window_scan: too short is not a verdict", QR.window_scan(_xs[:250], 100)["ok"] is False)
+    close("window_scan: best window t matches a stdlib scan", _ws.get("best", float("nan")), max(_ts), 1e-9)
+    ok("window_scan: the same windows, one every w/4", _ws.get("n_win", float("nan")) == len(_ts), f"{_ws.get('n_win')} vs {len(_ts)}")
+    close("window_scan: share of windows above t = 2", _ws.get("frac_good", float("nan")), sum(t > 2 for t in _ts) / len(_ts), 1e-12)
+    ok("window_scan: too short is not a verdict", QR.window_scan(_xs[:250], 100).get("ok") is False)
 
     # P3 by hand: +1 for 500 days, then -1 for 500, trailing 250-day mean. The switch stays on
     # until day 625, where the window holds as many losses as gains: 250 gains and 125 losses
     # selected, mean 1/3, against -1/3 always on. A window that includes today changes both.
     _x = _np.array([1.0] * 500 + [-1.0] * 500)
     _sw = QR.regime_switch(_x, look=250)
-    ok("regime_switch: on for 375 of 750 days", _sw["duty"] == 0.5, str(_sw["duty"]))
-    close("regime_switch: the trailing rule earns 1/3 a day", _sw["mean_rule"], 1 / 3, 1e-12)
-    close("regime_switch: always on earns -1/3 a day", _sw["mean_always"], -1 / 3, 1e-12)
-    ok("regime_switch: beats always-on and the random switch", _sw["beats_always"] and _sw["beats_random"])
-    _sw = QR.regime_switch(_x, look=250, detector=[1.0 if i % 2 == 0 else -1.0 for i in range(1000)])
-    close("regime_switch: a given detector is used as is (even days: -1/3)", _sw["mean_rule"], -1 / 3, 1e-12)
-    ok("regime_switch: too short is not a verdict", QR.regime_switch(_x[:300], look=250)["ok"] is False)
+    ok("regime_switch: on for 375 of 750 days", _sw.get("duty", float("nan")) == 0.5, str(_sw.get("duty", float("nan"))))
+    close("regime_switch: the trailing rule earns 1/3 a day", _sw.get("mean_rule", float("nan")), 1 / 3, 1e-12)
+    close("regime_switch: always on earns -1/3 a day", _sw.get("mean_always", float("nan")), -1 / 3, 1e-12)
+    ok("regime_switch: beats always-on and the random switch", _sw.get("beats_always") and _sw.get("beats_random"))
+    _sw = QR.regime_switch(_x, look=250, detector=[1.0 if i < 400 else -1.0 for i in range(1000)])
+    ok("regime_switch: a given detector is used as is (on days 250-399 only)",
+       _sw.get("duty", float("nan")) == 0.2 and _sw.get("mean_rule", float("nan")) == 1.0, f"duty {_sw.get('duty')}, mean {_sw.get('mean_rule')}")
+    ok("regime_switch: too short is not a verdict", QR.regime_switch(_x[:300], look=250).get("ok") is False)
 
     # The module's own power check: an edge confined to a quarter of the sample must come back
     # real and identifiable in advance; pure noise must not.
