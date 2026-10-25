@@ -1,5 +1,68 @@
 # Changelog
 
+## v2.0.0, il cancello 2 rifà la ricerca (2026-10-25)
+
+**Cambio che rompe.** Il cancello 2 di `confluence_gate` non gira più con le sole maschere:
+serve `build_score(masks, pnl)`, la funzione che ha costruito il punteggio, oppure
+`preregistered=True` se il punteggio era fissato prima di guardare questo P&L. Senza nessuno dei
+due il cancello 2 non è eseguito e il verdetto è NON DECIDIBILE, come per ogni cancello non
+eseguito. `build_score` insieme a `preregistered=True` solleva `ValueError`. Il parametro
+`min_n` di `confluence_gate` sparisce: serviva solo a `search_null`, che resta com'era.
+
+### Il nuovo nullo
+- **Rifà la ricerca.** Mescola il P&L, chiama `build_score` sul P&L mescolato e ricalcola lo
+  stesso t della pendenza che misura sul punteggio vero. Prima confrontava il t della pendenza
+  con il miglior t della media di una regola: due statistiche diverse, da cui venivano i quattro
+  limiti misurati nella v1.6.2.
+- **Controlla la funzione.** Se `build_score(masks, pnl)` non ricostruisce il punteggio dato, il
+  cancello 2 non è eseguito: il nullo ripeterebbe una ricerca diversa.
+- **A due code.** Passa se |t| supera il 95° percentile di |t| del nullo, quindi passa anche una
+  confluenza che peggiora il P&L, come già i cancelli 1, 3 e 4.
+- **A blocchi.** Mescola blocchi di 25 periodi; `block=1` mescola i singoli periodi. Con i
+  blocchi il nullo segue la persistenza di ogni serie. Su rumore indipendente resta |t(n-2)|:
+  su 10 serie con 1000 estrazioni la mediana di |t| va da 0.638 a 0.707 e il 95° percentile da
+  1.806 a 2.136, contro 0.674 e 1.961 (con `block=1`: da 0.622 a 0.732 e da 1.839 a 2.072).
+- **Nullo degenere.** Se meno di metà delle estrazioni danno un t finito e distinto (punteggio o
+  P&L costanti, o un blocco lungo quanto la serie), il cancello 2 non è eseguito invece di
+  bocciare in silenzio.
+- `build_score` gira `n_rep` volte: una ricerca su migliaia di regole costa secondi a chiamata.
+
+### Misurato
+Passaggi del cancello 2 su 200 serie per riga, con 200 permutazioni e il `confluence_gate` vero
+delle due versioni. Il rumore dovrebbe passare 10 volte su 200 (5%).
+
+| forma | caso | v1.6.2 | v2.0.0 |
+|---|---|---|---|
+| punteggio 0-3 fissato prima | rumore, media base 0 / 1.0 / -0.3 | 3 / 3 / 3 | 10 / 10 / 10 |
+| punteggio 0-3 fissato prima | effetto +0.06 | 161 | 168 |
+| punteggio 0-3 fissato prima | effetto -0.06 (la confluenza peggiora) | 0 | 174 |
+| 3 regole migliori su 200, cercate | rumore, media base 0 / 1.0 / -0.3 | 152 / 78 / 142 | 13 / 14 / 12 |
+| 3 regole migliori su 200, cercate | effetto 0.15 sulle 3 regole | 195 | 146 |
+| una regola che copre 25% / 50% / 75% | rumore | 8 / 14 / 19 | 8 / 8 / 8 |
+| una regola che copre 50% | effetto 0.12 | 164 | 133 |
+| P&L a due valori | rumore | 0 | 7 |
+| P&L a due valori | effetto 0.25 | 0 | 178 |
+| P&L e punteggio persistenti | rumore | 26 | 9 |
+| P&L e punteggio persistenti | effetto 0.1 | 192 | 153 |
+| andamento comune nel tempo | rumore | 185 | 188 |
+
+Dove la v2.0.0 passa meno effetti veri, la v1.6.2 li passava insieme al rumore: dal 39% al 76%
+del rumore sul punteggio cercato, il 13% sulle serie persistenti. Le due code costano qualche
+punto sugli effetti che salgono (168 contro 183 a una coda, misurato sul prototipo).
+
+### Limite che resta
+Un andamento nel tempo comune a punteggio e P&L passa il cancello 2 in 188 casi su 200: nessun
+rimescolamento distingue un andamento condiviso da un effetto. Togliere l'andamento a entrambi
+porta il rumore al 6%, ma cambia la domanda e toglie potenza (145 contro 200 su un effetto vero
+che sale col tempo, misurato sul prototipo), quindi non è stato fatto. Questo caso lo devono
+fermare i cancelli 3 e 4.
+
+### Check
+La suite passa da 424 a 437 check: ripetizione della ricerca, punteggio fissato, nessuno dei
+due, funzione che non ricostruisce il punteggio, conflitto fra i due, due code, blocchi, nullo
+degenere, il t reale contro un OLS scritto a mano, la forma del nullo su rumore indipendente
+contro |t(1998)|. 13 mutazioni del codice nuovo rendono rossa la suite, nessuna sopravvive.
+
 ## v1.6.2, check per qconfluence e qregime, e due difetti che hanno trovato (2026-10-25)
 
 Fino a qui nessun check toccava `qconfluence` e `qregime`. La suite ne ha 45 nuovi. Quasi tutti

@@ -198,7 +198,8 @@ Load `references/` files as needed — **start with `routing-table.md`** (questi
 - `scripts/qconfluence.py` — **conditional edges and confluence sizing** (§5b): `dose_response`
   (monotone gradient across buckets, not a binary filter), `search_null` (what t your search
   produces on shuffled data — the bar your real t must clear), `confluence_gate` (the five gates,
-  verdict derived not chosen), `sizing_from_slope` + `sizing_cost` (weights from the fitted slope,
+  verdict derived not chosen; gate 2 replays your search through `build_score`, or takes
+  `preregistered=True`), `sizing_from_slope` + `sizing_cost` (weights from the fitted slope,
   and what sizing costs you in Sharpe if the confluence is noise).
 - `scripts/qstats.py` also carries the **decidability gate** (§1b): `years_to_decide` (how many
   years this Sharpe needs to reach t=2, with and without publication decay) and
@@ -482,21 +483,26 @@ hypotheses with an economic mechanism over a wide automatic sweep.
    the weakest possible evidence and the easiest for noise to fake; an ordered gradient is much
    harder. It is also the only shape that answers the sizing question — you need the **slope**,
    not one bucket's mean.
-2. **Null calibration of the search** (`search_null`) — shuffle the P&L, re-run the *entire*
-   search, compare against that distribution's 95th percentile. `search_null` tests each rule's
-   mean P&L against zero, so centre the P&L first, as `confluence_gate` does. Uncentred, a
-   profitable base strategy raises the bar and a losing one lowers it, whatever the rule.
-   **Inside `confluence_gate` this null does not replay how the score was built.** If the score
-   came out of the search (say, how many of its best rules are on), pure noise passes gate 2
-   in 31 of 40 runs, and only gate 4 stops it. Never read gate 2 alone on a searched score;
-   CHANGELOG v1.6.2 lists this null's other measured limits.
+2. **Null calibration of the search** — shuffle the P&L, re-run the *entire* search, compare
+   against that distribution's 95th percentile. `confluence_gate` does it literally: pass
+   `build_score(masks, pnl) -> score`, the function that built your score, and gate 2 shuffles
+   the P&L in blocks of 25 periods (`block`), rebuilds the score from each shuffle and
+   recomputes the same slope t, two-sided. A score fixed before looking at this P&L takes
+   `preregistered=True` instead. With neither, gate 2 is not run: the masks alone cannot say
+   how a score was built from them. Measured on 200 datasets per shape, noise passes it
+   between 3.5% and 7% of the time whatever the base mean, the rules' coverage, a two-valued
+   P&L or persistence in the data. **A trend that score and P&L share still passes it** (188
+   of 200): no shuffle can tell a shared trend from an edge, so gates 3 and 4 have to.
+   `search_null` remains as a standalone tool; it tests each rule's mean P&L against zero, so
+   centre the P&L before using it on its own.
 3. **Out-of-sample** — select on the first part, apply frozen to the rest. No re-tuning.
 4. **Independent replication** — same frozen rule, different instrument. In the measured case
    this is the gate that killed it, after gates 1-3 all passed.
 5. **Concentration** — jackknife. An effect living in three periods is a story about three periods.
 
 A gate **not executed** is not a gate passed: `confluence_gate` returns NON DECIDIBILE, never a
-positive, when replication is missing.
+positive, when replication is missing, or when gate 2 has neither `build_score` nor
+`preregistered=True`.
 
 ### If all five pass, then sizing — and only then
 
