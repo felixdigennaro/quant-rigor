@@ -1305,11 +1305,11 @@ else:
     # The rule at its edges. n_rep=19 is the smallest null whose p-value reaches 0.05: a
     # planted effect above every draw has p = 1/20 and passes. On noise seed 406 one draw of
     # 29 reaches the real: p = 2/30 fails, where a bar at the 93rd percentile of the draws
-    # would pass. With 2 blocks the null has two permutations, and the identity, which ties
-    # the real in exact arithmetic, is about half the draws: a tie counts as >= and the gate
-    # cannot pass. In floating point the batch kernel rounds the identity rows one ulp below
-    # the single-row real on seed 5 (101 of 101 rows, 2026-10-25), so the tie needs the
-    # module's tolerance: with exact equality the identity vanishes and p would be 1/201.
+    # would pass. With fewer than 5 blocks the identity permutation, which ties the real, is
+    # so frequent that even an evident effect cannot pass: the gate is not run. With 5
+    # blocks it is 1 shuffle in 120; on seed 11 three of 200 are the series itself, and the
+    # batch kernel rounds all three one ulp below the single-row real (2026-10-25), so the
+    # tie needs the module's tolerance: with exact equality p would be 1/201, not 4/201.
     _sc, _pn = _book(1, 0.25, 1.0)[:2]
     _cg = _gate(_sc, _pn, preregistered=True, n_rep=19)
     ok("confluence_gate: n_rep=19 with the real above every draw is p = 0.05 exactly, which passes",
@@ -1320,11 +1320,14 @@ else:
        _null(_cg, "p") == 2 / 30 and _gate2(_cg) is False and _rule(_cg),
        f"p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
     _cg = _gate(*_book(5, 0.25, 1.0)[:2], preregistered=True, block=1000)
+    ok("confluence_gate: 2 blocks cannot let an evident effect pass, so gate 2 is not run, with a note on blocks",
+       _not_run(_cg, "blocchi"), str(_cg.get("search_null")))
+    _cg = _gate(*_book(11, 0.25, 1.0)[:2], preregistered=True, block=400, seed=11)
     _real = _null(_cg, "real_abs_t")
     _ties = sum(abs(float(v) - _real) <= 1e-9 * _real
                 for v in _cg.get("search_null", {}).get("null_abs_t", []))
-    ok("confluence_gate: with 2 blocks the identity permutation ties the real on about half the draws, a tie counts as >=, and the gate fails",
-       _gate2(_cg) is False and _ties >= 80 and _null(_cg, "p") >= (1 + _ties) / 201,
+    ok("confluence_gate: with 5 blocks the shuffles that are the series itself tie the real and count as >=",
+       _ties >= 1 and _null(_cg, "p") == (1 + _ties) / 201 and _gate2(_cg) is True,
        f"ties {_ties}, p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
 
     # Gate 5 examines the bucket the sizing would weight UP: the top-score bucket on a rising
