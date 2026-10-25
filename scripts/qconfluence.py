@@ -146,6 +146,10 @@ def search_null(masks, pnl, n_rep=200, min_n=30, seed=0, train=None):
     Shuffling `pnl` destroys any association with the rules while preserving the return
     distribution exactly. The best-of-N t you get back is the bar your real t must clear.
 
+    Each rule's t tests its mean P&L against ZERO, so a base strategy with a mean of its own
+    moves every t. Centre `pnl` first, or compute your real t the same way (`confluence_gate`
+    centres).
+
     This is the single highest-yield function here. Without it, a searched t is a number
     with no interpretation: 968 rules put the median best-t at +3.02 in the measured case.
     """
@@ -254,7 +258,11 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
                                            (dr.get("monotone_up") or dr.get("monotone_down")))
 
     if masks is not None:
-        nl = search_null(masks, pnl, n_rep=n_rep, min_n=min_n, seed=seed,
+        # search_null scores each rule's mean P&L against zero; the slope t compared with it
+        # ignores the base strategy's own mean. Uncentred, a profitable base raised the bar and
+        # a losing one lowered it (2026-10-25, 40 series per case: a real effect passed 0% of
+        # the time at base mean 1.0, pure noise 100% at -0.3). Centred, neither moves it.
+        nl = search_null(masks, pnl - pnl.mean(), n_rep=n_rep, min_n=min_n, seed=seed,
                          train=slice(0, cut))
         res["search_null"] = {k: v for k, v in nl.items() if k != "dist"}
         real_t = dr.get("slope_t", float("nan"))
