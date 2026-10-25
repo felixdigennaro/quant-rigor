@@ -1252,6 +1252,31 @@ else:
                                                   _b.get("search_null", {}).get("null_abs_t", [1.0])),
        f"p {_null(_a, 'p')} vs {_null(_b, 'p')}")
 
+    # build_score gets a copy of masks too: a builder that marked its picks as used in place
+    # emptied all 100 of the caller's rules, and every rebuild after the first was constant.
+    # A list of rows is deep-copied, since a shallow copy shares the rows.
+    def _marking(masks, pnl):
+        sc = _search3(masks, pnl)
+        masks[:] = False
+        return sc
+
+    def _marking_rows(rows, pnl):
+        sc = _search3(_np.stack(rows), pnl)
+        rows[0][:] = False
+        return sc
+
+    _mk, _pn, _sc = _searched(300, 0.3)
+    _was = _mk.copy()
+    _cg = _gate(_sc, _pn, masks=_mk, build_score=_marking, n_rep=100)
+    ok("confluence_gate: a builder that empties its masks argument in place leaves the caller's masks as they were, and the gate runs on them",
+       _np.array_equal(_mk, _was) and _gate2(_cg) is True,
+       f"rules on in {int(_mk.sum())} of {int(_was.sum())} cells, gate {_gate2(_cg)}")
+    _rows = [_row.copy() for _row in _mk]
+    _cg = _gate(_sc, _pn, masks=_rows, build_score=_marking_rows, n_rep=100)
+    ok("confluence_gate: masks given as a list of rows are deep-copied: a builder that empties the first row in place leaves the caller's row",
+       _np.array_equal(_np.stack(_rows), _was) and _gate2(_cg) is True,
+       f"row 0 on in {int(_rows[0].sum())} of {int(_was[0].sum())} cells, gate {_gate2(_cg)}")
+
     # A threshold search: the score counts the rules whose on-vs-off t on the train part is
     # above 3. On shuffled noise it mostly finds nothing, the rebuilt score is constant and
     # has no slope: that draw is |t| = 0, the search found nothing, not a missing draw.

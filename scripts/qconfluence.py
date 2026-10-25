@@ -57,6 +57,7 @@ THE COST OF BEING WRONG, which decides how careful to be:
 pure noise. Sizing 1x/3x on a coin flip multiplies Sharpe by mean(w)/sqrt(mean(w^2)) = 0.89:
 an 11% loss for nothing. The upside if real is larger, which is exactly why the gates matter.
 """
+import copy
 import math
 
 import numpy as np
@@ -228,6 +229,13 @@ def _slope_t(score, P):
         return np.where(var_b > 0, b / np.sqrt(var_b), np.nan)
 
 
+def _fresh(masks):
+    """A copy of `masks` for each `build_score` call. A builder that marked its picks as used
+    in place emptied all 100 of the caller's rules, and every rebuild after the first was
+    constant (2026-10-25)."""
+    return np.array(masks, copy=True) if isinstance(masks, np.ndarray) else copy.deepcopy(masks)
+
+
 def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed):
     """Gate 2 of `confluence_gate`: (verdict, or None when the gate is not run, and the
     `search_null` record).
@@ -267,7 +275,7 @@ def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed)
                        f"può scendere a 0.05 sotto 19 estrazioni; è un difetto della chiamata, "
                        f"non un verdetto sui dati")
     if build_score is not None:
-        rebuilt = np.asarray(build_score(masks, pnl.copy()), float)
+        rebuilt = np.asarray(build_score(_fresh(masks), pnl.copy()), float)
         if rebuilt.shape != score.shape or not np.allclose(rebuilt, score, equal_nan=True):
             return not_run("build_score(masks, pnl) non ricostruisce score: il nullo "
                            "ripeterebbe una ricerca diversa da quella che ha prodotto il "
@@ -286,7 +294,7 @@ def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed)
         t_null = np.empty(n_rep)
         same = True
         for k, p in enumerate(P):
-            rb = np.asarray(build_score(masks, p.copy()), float)
+            rb = np.asarray(build_score(_fresh(masks), p.copy()), float)
             if rb.shape != score.shape or not np.all(np.isfinite(rb)):
                 return not_run(f"sull'estrazione {k} build_score ha restituito un punteggio di "
                                f"forma {rb.shape} invece di {score.shape}, o con valori non "
@@ -385,7 +393,7 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
 
     `score`         per-period confluence strength (this is what you would size on)
     `pnl`           per-period P&L of the base strategy
-    `masks`         every rule the search considered; handed to `build_score` unchanged
+    `masks`         every rule the search considered; `build_score` gets a copy on each call
     `build_score`   `build_score(masks, pnl) -> score`, the function that built `score`.
                     Gate 2 shuffles the P&L in blocks, rebuilds the score from it and
                     recomputes the same slope t, `n_rep` times
