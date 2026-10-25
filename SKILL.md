@@ -212,8 +212,10 @@ Load `references/` files as needed — **start with `routing-table.md`** (questi
   `equity_chart`, `drawdown_chart`, `contribution_chart`, `surface_chart(…, headroom=…)`,
   `dist_chart`, plus `sparkline()` for terminal output.
 
-All scripts ship with `tests/test_all.py` — 303 assertions against independent references
-(published t-tables, known normal quantiles, closed forms) plus degenerate-input cases. Run it first.
+The scripts ship with `tests/test_all.py`, which checks them against independent references
+(published t-tables, known normal quantiles, closed forms) plus degenerate-input cases. It prints
+the passed and failed counts and exits 1 if any check fails. `qconfluence` and `qregime` import
+numpy and have no checks there yet. Run it first.
 
 ---
 

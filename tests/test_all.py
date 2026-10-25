@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""quant-rigor test suite — STDLIB ONLY. Run: python3 tests/test_all.py
+"""quant-rigor test suite. Run: python3 tests/test_all.py
+
+STDLIB ONLY, except one section that needs numpy: it runs when numpy is installed and is
+listed as SKIP when it is not. Exits 1 if any check fails.
 
 Every numeric assertion is against an INDEPENDENT reference (published statistical tables,
 closed-form results, or analytically known values) — never against the library's own output.
@@ -22,7 +25,7 @@ import qmicro as MI      # noqa: E402
 import qportfolio as PF  # noqa: E402
 import qclaim as QC      # noqa: E402
 
-PASS, FAIL = [], []
+PASS, FAIL, SKIP = [], [], []
 
 
 def ok(name, cond, detail=""):
@@ -32,6 +35,17 @@ def ok(name, cond, detail=""):
 def close(name, got, want, tol, detail=""):
     d = abs(got - want)
     ok(name, d <= tol, detail or f"got {got:.8g}, want {want:.8g}, |Δ|={d:.2e} (tol {tol:.1e})")
+
+
+# ══════════════════════════════════ 0. the suite can fail
+# A copy of this file printed SUITE RED and still exited 0 (found 2026-10-25), so a CI check
+# on it could never go red. A check written below the exit never runs. Both break one rule:
+# the last statement of this file is the exit.
+import ast  # noqa: E402
+_last = ast.unparse(ast.parse(open(os.path.abspath(__file__), encoding="utf-8").read()).body[-1])
+if _last != "sys.exit(1 if FAIL else 0)":
+    sys.exit(f"tests/test_all.py must end with `sys.exit(1 if FAIL else 0)`, "
+             f"not `{_last.splitlines()[0]}`")
 
 
 # ══════════════════════════════════ 1. t distribution vs published tables
@@ -874,28 +888,38 @@ ok("verdict: un criterio rotto non passa in silenzio",
 # due fette hanno lunghezza diversa esplode — ed e' il caso fortunato. Quando hanno la stessa
 # lunghezza (o una delle due e' lunga 1, e allora numpy trasmette) somma i numeri e restituisce
 # una banda plausibile e SBAGLIATA, senza alcun errore. Il tipo dichiarato non cambia mai.
-import numpy as _np
-_arr = _np.array([1.0, -2.0, 3.0, -1.0, 2.0, 0.5, -0.5, 1.5, -1.5, 2.5])
-_lst = [float(v) for v in _arr]
-_ba = S.bootstrap(_arr, stat=_np.mean, reps=200, seed=3, block=4)
-_bl = S.bootstrap(_lst, stat=_np.mean, reps=200, seed=3, block=4)
-ok("bootstrap: ndarray con blocchi non esplode", isinstance(_ba["p05"], float) or _ba["p05"] == _ba["p05"])
-ok("bootstrap: ndarray e lista danno lo STESSO risultato", abs(_ba["p50"] - _bl["p50"]) < 1e-12)
-ok("bootstrap: la banda resta dentro l'intervallo dei dati",
-   min(_lst) <= _ba["p05"] <= max(_lst) and min(_lst) <= _ba["p95"] <= max(_lst))
-_ja = S.jackknife(_arr, stat=_np.mean)
-_jl = S.jackknife(_lst, stat=_np.mean)
-ok("jackknife: ndarray non esplode e coincide con la lista",
-   abs(_ja["full"] - _jl["full"]) < 1e-12 and _ja["sign_survives"] == _jl["sign_survives"])
-import qmontecarlo as QMC
-_ma = QMC.surrogate_paths(_arr, model="block_bootstrap", block=4, reps=100, seed=3, drift_zero=False)
-ok("surrogate_paths: block_bootstrap con drift_zero=False su ndarray non esplode",
-   isinstance(_ma, dict))
+# The scripts this suite covers need only the stdlib, so without numpy this section is a
+# SKIP, not a crash that hides every result above it.
+try:
+    import numpy as _np
+except ImportError as e:
+    _np = None
+    SKIP.append(f"ndarray attraversa il confine lista (R13): {e}")
+if _np is not None:
+    _arr = _np.array([1.0, -2.0, 3.0, -1.0, 2.0, 0.5, -0.5, 1.5, -1.5, 2.5])
+    _lst = [float(v) for v in _arr]
+    _ba = S.bootstrap(_arr, stat=_np.mean, reps=200, seed=3, block=4)
+    _bl = S.bootstrap(_lst, stat=_np.mean, reps=200, seed=3, block=4)
+    ok("bootstrap: ndarray con blocchi non esplode", isinstance(_ba["p05"], float) or _ba["p05"] == _ba["p05"])
+    ok("bootstrap: ndarray e lista danno lo STESSO risultato", abs(_ba["p50"] - _bl["p50"]) < 1e-12)
+    ok("bootstrap: la banda resta dentro l'intervallo dei dati",
+       min(_lst) <= _ba["p05"] <= max(_lst) and min(_lst) <= _ba["p95"] <= max(_lst))
+    _ja = S.jackknife(_arr, stat=_np.mean)
+    _jl = S.jackknife(_lst, stat=_np.mean)
+    ok("jackknife: ndarray non esplode e coincide con la lista",
+       abs(_ja["full"] - _jl["full"]) < 1e-12 and _ja["sign_survives"] == _jl["sign_survives"])
+    import qmontecarlo as QMC
+    _ma = QMC.surrogate_paths(_arr, model="block_bootstrap", block=4, reps=100, seed=3, drift_zero=False)
+    ok("surrogate_paths: block_bootstrap con drift_zero=False su ndarray non esplode",
+       isinstance(_ma, dict))
 
 # ══════════════════════════════════ summary
 print(f"\n{'='*66}\nquant-rigor test suite\n{'='*66}")
 for f in FAIL:
     print(f"  FAIL  {f}")
+for s in SKIP:
+    print(f"  SKIP  {s}")
 
-print(f"\n  passed {len(PASS)} · failed {len(FAIL)}")
+print(f"\n  passed {len(PASS)} · failed {len(FAIL)} · sections skipped {len(SKIP)}")
 print(f"  {'ALL GREEN' if not FAIL else 'SUITE RED — fix before shipping'}")
+sys.exit(1 if FAIL else 0)

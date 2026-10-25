@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.6.1, la suite sa fallire (2026-10-25)
+
+`tests/test_all.py` stampava `SUITE RED` e usciva comunque con 0, quindi un check di CI
+costruito sopra non poteva mai diventare rosso. La copia nel repo `quant-rigor` (1.3.0) aveva
+ancora `sys.exit(1 if FAIL else 0)`; la copia installata come skill l'aveva perso.
+
+- **L'uscita è tornata**, e la suite controlla in testa che resti l'ultima istruzione del
+  file. Se manca, se diventa `sys.exit(0)` o se un check le viene scritto sotto (dove non
+  girerebbe mai), la suite esce con 1 prima di eseguire un solo check.
+- **Senza numpy la sezione ndarray non fa più crollare la suite.** I moduli che la suite
+  copre usano solo la libreria standard, quindi senza numpy la sezione compare come `SKIP` e
+  il riepilogo la conta (`sections skipped`). Prima l'`import numpy` falliva dopo tutti gli
+  altri check e il riepilogo non veniva mai stampato.
+- **README e SKILL.md non scrivono più il numero di asserzioni a mano.** Dicevano 255 e 303;
+  il 2026-10-25 la suite ne contava 379 con numpy e 374 senza. SKILL.md dice anche che
+  `qconfluence` e `qregime` non hanno ancora check.
+- **Le due copie sono di nuovo uguali.** Il repo riceve da quella installata le versioni
+  v1.4-v1.6 e i test ndarray del 2026-08-10, che non avevano una voce qui.
+
 ## v1.6 — le affermazioni si generano, non si scrivono (2026-08-01)
 
 Nata dal fallimento documentato delle regole in prosa. Cinque frasi consegnate contraddicevano
