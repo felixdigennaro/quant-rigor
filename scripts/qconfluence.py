@@ -31,10 +31,11 @@ THE FIVE GATES, in order. Each can kill the finding, and killing early saves the
 
   2. NULL CALIBRATION OF THE SEARCH.
      Shuffle the P&L in blocks, rebuild the score with the SAME function that built it,
-     recompute the SAME slope t. Many times. |t| is evidence only if it beats the 95th
-     percentile of that distribution. A score fixed before looking at the P&L keeps its
-     score and shuffles only the P&L. Given neither the function nor that promise, the
-     gate is not run and the verdict is NON DECIDIBILE.
+     recompute the SAME slope t (HC3-studentised, so a P&L whose variance grows with the
+     score does not inflate it). Many times. The permutation p-value
+     (1 + #{|t_null| >= |t_real|}) / (1 + n_rep) must be <= 0.05. A score fixed before
+     looking at the P&L keeps its score and shuffles only the P&L. Given neither the
+     function nor that promise, the gate is not run and the verdict is NON DECIDIBILE.
 
   3. OUT-OF-SAMPLE.
      Select on the first part, apply frozen to the last part. No re-tuning, no second pick.
@@ -199,61 +200,116 @@ def _block_shuffle(x, block, rng):
 
 
 def _slope_t(score, P):
-    """OLS slope t of each row of `P` on the standardised `score`. NaN where the score has
-    no variance, the fit has no residual, or fewer than 3 periods."""
+    """Slope t of each row of `P` on the centred `score`, with the HC3 standard error
+    (the studentised permutation test of DiCiccio and Romano 2017). The plain OLS t assumes
+    the P&L's variance does not depend on the score; a count whose rare top value is also the
+    most volatile broke that, and noise passed gate 2 in 68 of 400 datasets (2026-10-25,
+    22 of 400 with HC3). NaN where
+    the score has no variance, one period carries all of it (leverage 1, HC3 undefined), the
+    fit has no residual, or fewer than 3 periods."""
     s = np.asarray(score, float)
     P = np.atleast_2d(np.asarray(P, float))
     n = s.size
-    sd = s.std(ddof=1) if n > 2 else 0.0
-    if not sd > 0:
-        return np.full(P.shape[0], np.nan)
-    z = (s - s.mean()) / sd
-    Pc = P - P.mean(1, keepdims=True)
-    b = (Pc @ z) / (n - 1)
-    rss = (Pc ** 2).sum(1) - b ** 2 * (n - 1)
-    se = np.sqrt(np.maximum(rss, 0.0) / (n - 2) / (n - 1))
+    undefined = np.full(P.shape[0], np.nan)
+    if n < 3:
+        return undefined
+    z = s - s.mean()
+    szz = float(z @ z)
+    if not szz > 0:
+        return undefined
+    h = 1.0 / n + z ** 2 / szz
+    if h.max() >= 1 - 1e-9:
+        return undefined
+    b = (P @ z) / szz
+    e = P - P.mean(1, keepdims=True) - b[:, None] * z
+    var_b = (e ** 2) @ (z ** 2 / (1 - h) ** 2) / szz ** 2
     with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(se > 0, b / se, np.nan)
+        return np.where(var_b > 0, b / np.sqrt(var_b), np.nan)
 
 
 def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed):
-    """Gate 2 of `confluence_gate`: (verdict or None when not run, the `search_null` record).
+    """Gate 2 of `confluence_gate`: (verdict, or None when the gate is not run, and the
+    `search_null` record).
 
-    The real statistic is the slope t of `pnl` on `score`. The null shuffles `pnl` in
+    The real statistic is the HC3 slope t of `pnl` on `score`. The null shuffles `pnl` in
     blocks and recomputes the same t on the score that `build_score` rebuilds from the
     shuffled P&L, so the null repeats the search and carries its selection bias; a
-    pre-registered score stays fixed. Two-sided: |t| against the 95th percentile of |t|.
+    pre-registered score stays fixed. Two-sided, by the permutation p-value
+    (1 + #{|t_null| >= |t_real|}) / (1 + n_rep) <= 0.05. Every way the gate cannot run gets
+    its own note and None, never a verdict: a too-small n_rep, a NaN in the P&L or a block
+    longer than the series are failures of the call, not findings about the data.
     """
+    def not_run(note):
+        return None, {"note": "cancello 2 non eseguito: " + note}
+
     if build_score is None and not preregistered:
-        return None, {"note": "cancello 2 non eseguito: passare build_score (la funzione che "
-                              "ha costruito il punteggio, per ripetere la ricerca sul P&L "
-                              "permutato) oppure preregistered=True (punteggio fissato prima "
-                              "di guardare questo P&L)"}
+        return not_run("passare build_score (la funzione che ha costruito il punteggio, per "
+                       "ripetere la ricerca sul P&L permutato) oppure preregistered=True "
+                       "(punteggio fissato prima di guardare questo P&L)")
+    n = len(pnl)
+    bad_s, bad_p = int((~np.isfinite(score)).sum()), int((~np.isfinite(pnl)).sum())
+    if bad_s or bad_p:
+        return not_run(f"{bad_s} valori non finiti nel punteggio e {bad_p} nel P&L: il cancello "
+                       f"1 li scarta, il cancello 2 non può permutare intorno a loro")
+    if np.ptp(score) == 0 or np.ptp(pnl) == 0:
+        return not_run("punteggio o P&L senza varianza: non c'è una pendenza da misurare")
+    if math.ceil(n / block) < 2:
+        return not_run(f"block={block} su {n} periodi fa meno di 2 blocchi: niente da permutare")
+    if n_rep < 19:
+        return not_run(f"n_rep={n_rep}: il p-value di permutazione è almeno 1/(1+n_rep) e non "
+                       f"può scendere a 0.05 sotto 19 estrazioni; è un difetto della chiamata, "
+                       f"non un verdetto sui dati")
     if build_score is not None:
-        rebuilt = np.asarray(build_score(masks, pnl), float)
+        rebuilt = np.asarray(build_score(masks, pnl.copy()), float)
         if rebuilt.shape != score.shape or not np.allclose(rebuilt, score, equal_nan=True):
-            return None, {"note": "build_score(masks, pnl) non ricostruisce score: il nullo "
-                                  "ripeterebbe una ricerca diversa da quella che ha prodotto "
-                                  "il punteggio"}
+            return not_run("build_score(masks, pnl) non ricostruisce score: il nullo "
+                           "ripeterebbe una ricerca diversa da quella che ha prodotto il "
+                           "punteggio")
+    real = float(_slope_t(score, pnl)[0])
+    if not np.isfinite(real):
+        return not_run("il t della pendenza reale non è definito: il P&L è una funzione "
+                       "lineare esatta del punteggio, oppure un solo periodo porta tutta la "
+                       "varianza del punteggio")
     rng = np.random.default_rng(seed)
     P = np.stack([_block_shuffle(pnl, block, rng) for _ in range(n_rep)])
-    if build_score is not None:
-        t_null = np.array([_slope_t(build_score(masks, p), p)[0] for p in P])
-    else:
+    n_const = 0
+    if build_score is None:
         t_null = _slope_t(score, P)
-    real = float(_slope_t(score, pnl)[0])
-    fin = t_null[np.isfinite(t_null)]
-    n_fin, n_dis = len(fin), len(np.unique(fin))
-    if not np.isfinite(real) or 2 * min(n_fin, n_dis) < n_rep:
-        return None, {"note": f"nullo degenere: su {n_rep} estrazioni {n_fin} hanno un t finito "
-                              f"e {n_dis} distinto, e il t reale è {real}; servono t finiti e "
-                              f"distinti in almeno metà delle estrazioni (punteggio o P&L senza "
-                              f"varianza, o block={block} troppo grande per {len(pnl)} periodi)"}
-    a = np.abs(fin)
-    q95 = float(np.percentile(a, 95))
-    return abs(real) > q95, {"method": "replay" if build_score is not None else "preregistered",
-                             "two_sided": True, "block": block, "n_rep": n_rep,
-                             "real_abs_t": abs(real), "q95": q95, "median": float(np.median(a))}
+    else:
+        t_null = np.empty(n_rep)
+        same = True
+        for k, p in enumerate(P):
+            rb = np.asarray(build_score(masks, p.copy()), float)
+            if rb.shape != score.shape or not np.all(np.isfinite(rb)):
+                return not_run(f"sull'estrazione {k} build_score ha restituito un punteggio di "
+                               f"forma {rb.shape} invece di {score.shape}, o con valori non "
+                               f"finiti")
+            same = same and np.array_equal(rb, score)
+            if np.ptp(rb) == 0:
+                n_const += 1       # the search found nothing on this shuffle: no slope, |t| = 0
+                t_null[k] = 0.0
+            else:
+                t_null[k] = _slope_t(rb, p)[0]
+        if same:
+            return not_run("build_score restituisce lo stesso punteggio su ogni P&L permutato: "
+                           "non dipende dal P&L, quindi non ripete la ricerca. Se il punteggio "
+                           "era fissato in anticipo dichiararlo con preregistered=True")
+    if not np.all(np.isfinite(t_null)):
+        k = int(np.flatnonzero(~np.isfinite(t_null))[0])
+        return not_run(f"sull'estrazione {k} il t della pendenza non è definito: P&L permutato "
+                       f"funzione lineare esatta del punteggio ricostruito, o un solo periodo "
+                       f"con tutta la sua varianza")
+    a = np.abs(t_null)
+    # A draw equal to the real counts as >=. The identity permutation ties it exactly in the
+    # mathematics and only up to a BLAS kernel's rounding in floating point.
+    p = (1 + int((a >= abs(real) * (1 - 1e-9)).sum())) / (1 + n_rep)
+    rec = {"method": "replay" if build_score is not None else "preregistered",
+           "two_sided": True, "block": block, "n_rep": n_rep, "real_abs_t": abs(real),
+           "p": p, "q95": float(np.percentile(a, 95)), "median": float(np.median(a)),
+           "null_abs_t": a}
+    if build_score is not None:
+        rec["n_rebuilt_constant"] = n_const
+    return p <= 0.05, rec
 
 
 # ---------------------------------------------------------------- gate 5: concentration
@@ -331,9 +387,10 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     `block`         periods per shuffled block (1 is an iid shuffle)
     `replication`   (score, pnl) from a DIFFERENT instrument, rule frozen (gate 4)
 
-    Gate 2 is two-sided, |t| against the 95th percentile of |t| under its null, so a
-    falling dose-response can pass it as it can pass gates 1, 3 and 4. With neither
-    `build_score` nor `preregistered` the gate is not run and the verdict is NON DECIDIBILE.
+    Gate 2 is two-sided, the permutation p-value of |t| under its null, so a falling
+    dose-response can pass it as it can pass gates 1, 3 and 4. With neither `build_score`
+    nor `preregistered` the gate is not run and the verdict is NON DECIDIBILE. `n_rep` must
+    be at least 19 for the p-value to reach 0.05.
     """
     if build_score is not None and preregistered:
         raise ValueError("build_score and preregistered=True contradict each other: a score "

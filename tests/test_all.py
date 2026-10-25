@@ -1054,40 +1054,103 @@ else:
        _cg.get("verdict", "").startswith("NON DECIDIBILE") and "4_replicates" in _cg.get("verdict", ""),
        _cg.get("verdict"))
 
-    # The real statistic against the textbook OLS t in plain Python. Standardising the
-    # regressor leaves t unchanged, so the hand version regresses on the raw score.
-    def _ols_t(x, y):
+    # The real statistic against the HC3 slope t in plain Python (DiCiccio & Romano 2017):
+    # z the centred score, b = Σz(y-ȳ)/Σz², e the residuals, h = 1/n + z²/Σz², and
+    # var(b) = Σ z²e²/(1-h)² / (Σz²)². The plain OLS t assumed the P&L's variance ignores the
+    # score, and noise whose variance rose with the score passed gate 2 at 17% (see below).
+    def _hc3_t(x, y):
         n = len(x)
         mx, my = sum(x) / n, sum(y) / n
-        sxx = sum((a - mx) ** 2 for a in x)
-        b = sum((a - mx) * (v - my) for a, v in zip(x, y)) / sxx
-        rss = sum((v - my - b * (a - mx)) ** 2 for a, v in zip(x, y))
-        return b / math.sqrt(rss / (n - 2) / sxx)
+        z = [a - mx for a in x]
+        szz = sum(a * a for a in z)
+        b = sum(a * (v - my) for a, v in zip(z, y)) / szz
+        e = [v - my - b * a for a, v in zip(z, y)]
+        var = sum(a * a * r * r / (1 - 1 / n - a * a / szz) ** 2 for a, r in zip(z, e)) / szz ** 2
+        return b / math.sqrt(var)
+
+    def _p_hand(res):
+        """the permutation p-value recomputed from the exposed draws"""
+        sn = res.get("search_null", {})
+        a = [float(v) for v in sn.get("null_abs_t", [])]
+        return (1 + sum(v >= sn.get("real_abs_t", float("inf")) for v in a)) / (1 + len(a))
+
+    def _rule(res):
+        """gate 2 is (p <= 0.05); p is the permutation p-value of the n_rep exposed draws;
+        q95 and median are those draws' percentiles (numpy's linear interpolation)"""
+        sn = res.get("search_null", {})
+        a = sorted(float(v) for v in sn.get("null_abs_t", []))
+        if not a or len(a) != sn.get("n_rep"):
+            return False
+        pos = 0.95 * (len(a) - 1)
+        q95 = a[int(pos)] + (pos - int(pos)) * (a[int(pos) + 1] - a[int(pos)])
+        return (abs(_p_hand(res) - sn.get("p", float("nan"))) < 1e-12
+                and _gate2(res) is (sn.get("p", 1.0) <= 0.05)
+                and abs(q95 - sn.get("q95", float("nan"))) < 1e-12
+                and abs(_st.median(a) - sn.get("median", float("nan"))) < 1e-12)
+
+    def _not_run(res, word):
+        """gate 2 not run, with a note that names the reason"""
+        return _gate2(res) is None and word in res.get("search_null", {}).get("note", "")
 
     _sc, _pn, _rep = _book(3, 0.1, 0.5)
     _pre = _gate(_sc, _pn, preregistered=True)
-    close("confluence_gate: real_abs_t is the OLS |t| of the P&L on the score",
-          _null(_pre, "real_abs_t"), abs(_ols_t(_sc.tolist(), _pn.tolist())), 1e-9)
+    close("confluence_gate: real_abs_t is the HC3 |t| of the P&L on the score",
+          _null(_pre, "real_abs_t"), abs(_hc3_t(_sc.tolist(), _pn.tolist())), 1e-9)
+    ok("confluence_gate: gate 2 is p <= 0.05 with p, q95 and median recomputed from null_abs_t (pre-registered)",
+       _rule(_pre), f"p {_null(_pre, 'p')}, gate {_gate2(_pre)}")
+    # Every way gate 2 cannot run is None with a note that names the reason, never a verdict.
+    # One NaN in the P&L used to come back as a degenerate null blamed on variance or block.
     _cg = _gate(_np.full(2000, 2.0), _pn, preregistered=True)
-    ok("confluence_gate: a constant score leaves gate 2 not run, never failed",
-       _gate2(_cg) is None and "note" in _cg.get("search_null", {}), str(_gate2(_cg)))
+    ok("confluence_gate: a constant score leaves gate 2 not run, with a note on variance",
+       _not_run(_cg, "varianza"), str(_cg.get("search_null")))
+    _cg = _gate(_sc, _np.full(2000, 1.0), preregistered=True)
+    ok("confluence_gate: a constant P&L leaves gate 2 not run, with a note on variance",
+       _not_run(_cg, "varianza"), str(_cg.get("search_null")))
     _cg = _gate(_sc, _pn, preregistered=True, block=5000)
-    ok("confluence_gate: a block longer than the series cannot shuffle, so gate 2 is not run",
-       _gate2(_cg) is None and "note" in _cg.get("search_null", {}), str(_gate2(_cg)))
+    ok("confluence_gate: a block longer than the series makes one block, so gate 2 is not run",
+       _not_run(_cg, "blocchi"), str(_cg.get("search_null")))
+    _bad = _pn.copy()
+    _bad[10] = float("nan")
+    _cg = _gate(_sc, _bad, preregistered=True)
+    ok("confluence_gate: a NaN in the P&L leaves gate 2 not run, with a note naming non-finite values",
+       _not_run(_cg, "non finiti") and _cg.get("verdict", "").startswith("NON DECIDIBILE"),
+       f"{_cg.get('search_null')} / {_cg.get('verdict')}")
+    _bad[10] = float("inf")
+    _cg = _gate(_sc, _bad, preregistered=True)
+    ok("confluence_gate: an inf in the P&L leaves gate 2 not run, with a note naming non-finite values",
+       _not_run(_cg, "non finiti"), str(_cg.get("search_null")))
+    _bad = _sc.copy()
+    _bad[5] = float("inf")
+    with _np.errstate(invalid="ignore"):   # the sizing's z-score of an inf score warns; not under test
+        _cg = _gate(_bad, _pn, preregistered=True)
+    ok("confluence_gate: an inf in the score leaves gate 2 not run, with a note naming non-finite values",
+       _not_run(_cg, "non finiti"), str(_cg.get("search_null")))
+    _cg = _gate(_pn, _pn, preregistered=True)
+    ok("confluence_gate: a P&L that is an exact linear function of the score has no slope t, so gate 2 is not run",
+       _not_run(_cg, "non è definito"), str(_cg.get("search_null")))
+    _cg = _gate(_sc, _pn, preregistered=True, n_rep=18)
+    ok("confluence_gate: n_rep=18 cannot reach p = 0.05, so gate 2 is not run with a note naming n_rep",
+       _not_run(_cg, "n_rep"), str(_cg.get("search_null")))
 
     # The pre-registered null on iid noise, shuffled one period at a time, is |t(1998)|:
-    # median 0.6745, 95th percentile 1.961. Monte Carlo SE over 1000 draws: 0.025 and 0.06.
+    # median 0.6745, 95th percentile 1.961. The deviation has two parts: the Monte Carlo error
+    # of 1000 draws (0.025 and 0.06) and the dataset's own permutation distribution, which
+    # moves with its 2000 values. Measured over seeds 2-11 (2026-10-25): |Δmedian| up to 0.067,
+    # |Δq95| up to 0.123. The tolerances sit above both; the rule check pins the record's
+    # median and q95 to the exposed draws exactly.
     _g = _np.random.default_rng(2)
     _cg = _gate(_g.integers(0, 4, 2000).astype(float), _g.normal(0, 1, 2000),
                 preregistered=True, n_rep=1000, block=1)
     close("confluence_gate: the pre-registered null's median |t| on iid noise = 0.6745",
-          _null(_cg, "median"), _t_quantile(0.75, 1998), 0.08)
+          _null(_cg, "median"), _t_quantile(0.75, 1998), 0.1)
     close("confluence_gate: the pre-registered null's q95 of |t| on iid noise = 1.961",
           _null(_cg, "q95"), _t_quantile(0.975, 1998), 0.2)
 
     # Pre-registered noise on a losing base, 20 series: gate 2 runs on every one and passes
-    # at most 4 (5% nominal, measured 10 of 200). The calibration checks above pin the null's
-    # scale; this one pins that the verdict follows it on a base whose mean is not zero.
+    # at most 4 (nominal 10/201; measured 2 of these 20 and 13 of 200 on seeds 100-299,
+    # 2026-10-25; a 5% rate exceeds 4 of 20 with probability 0.26%). The calibration checks
+    # above pin the null's scale; this one pins that the verdict follows it on a base whose
+    # mean is not zero.
     _v = [_gate2(_gate(*_book(s, 0.0, -0.3)[:2], preregistered=True))
           for s in range(100, 120)]
     ok("confluence_gate: pre-registered noise on a losing base passes gate 2 at most 4 times in 20",
@@ -1096,7 +1159,10 @@ else:
     # A score the SEARCH built: the 3 of 100 random 50% masks with the highest one-sample t
     # of the P&L on the first 60% of periods, score = how many of the 3 are on. Replaying the
     # search on the shuffled P&L puts the selection bias into the null (q95 about 4, not 2),
-    # so noise passes at most 5 of 20 (measured 15 of 200).
+    # so noise passes at most 5 of 20 (nominal 5/101, exceeded with probability 0.03%;
+    # measured 2 of these 20, 18 of 200 on seeds 200-399 and 24 of 400 on seeds 1000-1399,
+    # and at n_rep=400 the p-value is uniform: 7, 14, 28 and 54 of 100 below 0.05, 0.10,
+    # 0.25 and 0.50; 2026-10-25).
     def _search3(masks, pnl):
         sub = masks[:, :1200].astype(float)
         p = pnl[:1200]
@@ -1122,6 +1188,8 @@ else:
     _rep_ = _gate(_sc, _pn, masks=_mk, build_score=_search3, n_rep=100)
     ok("confluence_gate: a planted effect on the 3 masks the search finds beats the replayed null",
        _gate2(_rep_) is True, f"|t| {_null(_rep_, 'real_abs_t'):.2f} vs q95 {_null(_rep_, 'q95'):.2f}")
+    ok("confluence_gate: gate 2 is p <= 0.05 with p, q95 and median recomputed from null_abs_t (replay)",
+       _rule(_rep_), f"p {_null(_rep_, 'p')}, gate {_gate2(_rep_)}")
     ok("confluence_gate: the search_null record names its method",
        _null(_rep_, "method") == "replay" and _null(_pre, "method") == "preregistered"
        and _null(_rep_, "two_sided") is True and _null(_rep_, "block") == 25,
@@ -1132,7 +1200,77 @@ else:
        and "2_beats_own_null" in _cg.get("verdict", ""), _cg.get("verdict"))
     _cg = _gate(_sc, _pn, masks=_mk, n_rep=100, build_score=lambda m, p: _search3(m, p)[::-1])
     ok("confluence_gate: a build_score that does not rebuild the score leaves gate 2 not run",
-       _gate2(_cg) is None and "note" in _cg.get("search_null", {}), str(_gate2(_cg)))
+       _not_run(_cg, "non ricostruisce"), str(_cg.get("search_null")))
+    _cg = _gate(_sc, _pn, masks=_mk, n_rep=100, build_score=lambda m, p: _search3(m, p)[:5])
+    ok("confluence_gate: a build_score of the wrong shape on the real P&L leaves gate 2 not run",
+       _not_run(_cg, "non ricostruisce"), str(_cg.get("search_null")))
+    _cg = _gate(_sc, _pn, masks=_mk, n_rep=100,
+                build_score=lambda m, p: _sc if _np.array_equal(p, _pn) else _np.ones(5))
+    ok("confluence_gate: a rebuilt score of the wrong shape on a shuffle leaves gate 2 not run, with a note naming the draw",
+       _not_run(_cg, "forma") and _not_run(_cg, "estrazione"), str(_cg.get("search_null")))
+    _cg = _gate(_sc, _pn, masks=_mk, n_rep=100,
+                build_score=lambda m, p: _sc if _np.array_equal(p, _pn) else p)
+    ok("confluence_gate: a shuffle whose P&L fits the rebuilt score exactly has no slope t: gate 2 is not run, that draw is not a 0",
+       _not_run(_cg, "non è definito") and _not_run(_cg, "estrazione"), str(_cg.get("search_null")))
+    # A builder that ignores the P&L keeps the searched score fixed against a null that only
+    # shuffles the P&L, which is the pre-registered null with the selection bias left in: on
+    # a searched noise score it passed 185 of 200 as "replay".
+    _mk, _pn, _sc = _searched(300, 0.0)
+    _cg = _gate(_sc, _pn, masks=_mk, n_rep=100, build_score=lambda m, p: _sc)
+    ok("confluence_gate: a build_score that ignores the P&L does not replay the search: gate 2 is not run and the note points at preregistered=True",
+       _not_run(_cg, "preregistered=True"), str(_cg.get("search_null")))
+
+    # build_score gets a copy of the P&L: a builder that centred in place moved the caller's
+    # mean to 0 and shifted every later gate.
+    def _centring(masks, pnl):
+        pnl -= pnl.mean()
+        return _search3(masks, pnl)
+
+    _mk, _pn, _ = _searched(310, 0.3)
+    _sc = _centring(_mk, _pn.copy())
+    _was = _pn.copy()
+    _cg = _gate(_sc, _pn, masks=_mk, build_score=_centring, n_rep=100)
+    ok("confluence_gate: a builder that centres in place leaves the caller's P&L as it was",
+       _np.array_equal(_pn, _was) and _gate2(_cg) is True,
+       f"mean before {_was.mean():.3f}, after {_pn.mean():.3f}, gate {_gate2(_cg)}")
+
+    # A threshold search: the score counts the rules whose on-vs-off t on the train part is
+    # above 3. On shuffled noise it mostly finds nothing, the rebuilt score is constant and
+    # has no slope: that draw is |t| = 0, the search found nothing, not a missing draw.
+    # Counted as missing, a planted effect of |t| 11 came back NON DECIDIBILE 200 of 200.
+    def _thresh(masks, pnl):
+        on = masks[:, :1200].astype(float)
+        off = 1.0 - on
+        p = pnl[:1200]
+        n1, n0 = on.sum(1), off.sum(1)
+        m1, m0 = (on @ p) / n1, (off @ p) / n0
+        v1 = ((on @ (p ** 2)) / n1 - m1 ** 2) * n1 / (n1 - 1)
+        v0 = ((off @ (p ** 2)) / n0 - m0 ** 2) * n0 / (n0 - 1)
+        return masks[(m1 - m0) / _np.sqrt(v1 / n1 + v0 / n0) > 3].sum(0).astype(float)
+
+    _mk, _pn, _ = _searched(320, 0.3)
+    _sc = _thresh(_mk, _pn)
+    _cg = _gate(_sc, _pn, masks=_mk, build_score=_thresh, n_rep=100)
+    ok("confluence_gate: a threshold search with a planted effect passes gate 2, the shuffles that find nothing counted as |t| = 0",
+       _sc.max() == 3 and _gate2(_cg) is True and 50 <= _null(_cg, "n_rebuilt_constant") < 100
+       and _rule(_cg),
+       f"found {int(_sc.max())} rules, gate {_gate2(_cg)}, |t| {_null(_cg, 'real_abs_t'):.2f}, "
+       f"p {_null(_cg, 'p')}, constant rebuilds {_null(_cg, 'n_rebuilt_constant')}")
+
+    # Noise whose variance rises with a skewed 0-3 count (sd 1, 1.2, 1.6, 2.5 at p .5, .3,
+    # .15, .05), pre-registered, mean 0. The plain OLS slope t is inflated on it: 68 of 400
+    # passed gate 2 (17%); with the HC3 t 22 of 400 (5.5%; seeds 10000-10399, 2026-10-25).
+    # On these 60 seeds OLS passes 10 and HC3 5; a calibrated 5% gate exceeds 7 of 60 with
+    # probability 0.98%.
+    _sd = _np.array([1.0, 1.2, 1.6, 2.5])
+    _v = []
+    for _s in range(60):
+        _g = _np.random.default_rng(10_000 + _s)
+        _sc = _g.choice([0.0, 1.0, 2.0, 3.0], size=2000, p=[0.5, 0.3, 0.15, 0.05])
+        _v.append(_gate2(_gate(_sc, _g.normal(0, 1, 2000) * _sd[_sc.astype(int)], preregistered=True)))
+    ok("confluence_gate: noise whose variance rises with the score passes gate 2 at most 7 times in 60",
+       all(isinstance(v, bool) for v in _v) and sum(v is True for v in _v) <= 7,
+       f"{sum(v is True for v in _v)} passes, {sum(v is None for v in _v)} not run")
     try:
         QF.confluence_gate(_sc, _pn, masks=_mk, build_score=_search3, preregistered=True)
         _err = None
@@ -1145,6 +1283,28 @@ else:
     _cg = _gate(_sc, _pn, preregistered=True)
     ok("confluence_gate: a falling dose-response beats the two-sided null",
        _gate2(_cg) is True, f"|t| {_null(_cg, 'real_abs_t'):.2f} vs q95 {_null(_cg, 'q95'):.2f}")
+
+    # The rule at its edges. n_rep=19 is the smallest null whose p-value reaches 0.05: a
+    # planted effect above every draw has p = 1/20 and passes. On noise seed 406 one draw of
+    # 29 reaches the real: p = 2/30 fails, where a bar at the 93rd percentile of the draws
+    # would pass. With 2 blocks the null has two permutations, and the identity, which ties
+    # the real exactly, is about half the draws: a tie counts as >= and the gate cannot pass.
+    _sc, _pn = _book(1, 0.25, 1.0)[:2]
+    _cg = _gate(_sc, _pn, preregistered=True, n_rep=19)
+    ok("confluence_gate: n_rep=19 with the real above every draw is p = 0.05 exactly, which passes",
+       _null(_cg, "p") == 0.05 and _gate2(_cg) is True and _rule(_cg),
+       f"p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
+    _cg = _gate(*_book(406, 0.0, -0.3)[:2], preregistered=True, n_rep=29)
+    ok("confluence_gate: one draw of 29 at or above the real is p = 2/30, which fails",
+       _null(_cg, "p") == 2 / 30 and _gate2(_cg) is False and _rule(_cg),
+       f"p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
+    _cg = _gate(_sc, _pn, preregistered=True, block=1000)
+    _real = _null(_cg, "real_abs_t")
+    _ties = sum(abs(float(v) - _real) <= 1e-9 * _real
+                for v in _cg.get("search_null", {}).get("null_abs_t", []))
+    ok("confluence_gate: with 2 blocks the identity permutation ties the real on about half the draws, a tie counts as >=, and the gate fails",
+       _gate2(_cg) is False and _ties >= 80 and _null(_cg, "p") >= (1 + _ties) / 201,
+       f"ties {_ties}, p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
 
     # Persistent data, no effect: P&L AR(0.6), score = quartile of an AR(0.97) series. The
     # slope t is inflated on such data, so the null must be too. Blocks of 25 keep the
