@@ -206,9 +206,8 @@ def _slope_t(score, P):
     (the studentised permutation test of DiCiccio and Romano 2017). The plain OLS t assumes
     the P&L's variance does not depend on the score; a count whose rare top value is also the
     most volatile broke that, and noise passed gate 2 in 68 of 400 datasets (2026-10-25,
-    22 of 400 with HC3). NaN where
-    the score has no variance, one period carries all of it (leverage 1, HC3 undefined), the
-    fit has no residual, or fewer than 3 periods."""
+    22 of 400 with HC3). NaN where the score has no variance, one period carries all of it
+    (leverage 1, HC3 undefined), the fit has no residual, or fewer than 3 periods."""
     s = np.asarray(score, float)
     P = np.atleast_2d(np.asarray(P, float))
     n = s.size
