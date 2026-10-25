@@ -127,9 +127,18 @@ def dose_response(score, pnl, n_buckets=5, min_per_bucket=20):
             "spread_top_bottom": float(mm[-1] - mm[0])}
 
 
+def _ranks(v):
+    """Average ranks: tied values share one rank, as Spearman's rho is defined. A confluence
+    count is almost always tied, and ordinal ranks broke the ties by position, which read low
+    (0.2479 against 0.2623 on a 0-3 count, 2026-10-25)."""
+    _, inv, cnt = np.unique(np.asarray(v, float), return_inverse=True, return_counts=True)
+    first = np.cumsum(cnt) - cnt
+    return (first + (cnt - 1) / 2.0)[inv.ravel()]
+
+
 def _spearman(a, b):
-    ra = np.argsort(np.argsort(a)).astype(float)
-    rb = np.argsort(np.argsort(b)).astype(float)
+    ra = _ranks(a)
+    rb = _ranks(b)
     ra -= ra.mean()
     rb -= rb.mean()
     d = math.sqrt((ra ** 2).sum() * (rb ** 2).sum())
