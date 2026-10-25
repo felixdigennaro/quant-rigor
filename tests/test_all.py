@@ -42,7 +42,8 @@ def close(name, got, want, tol, detail=""):
 # on it could never go red. A check written below the exit never runs. Both break one rule:
 # the last statement of this file is the exit.
 import ast  # noqa: E402
-_last = ast.unparse(ast.parse(open(os.path.abspath(__file__), encoding="utf-8").read()).body[-1])
+with open(os.path.abspath(__file__), encoding="utf-8") as _fh:
+    _last = ast.unparse(ast.parse(_fh.read()).body[-1])
 if _last != "sys.exit(1 if FAIL else 0)":
     sys.exit(f"tests/test_all.py must end with `sys.exit(1 if FAIL else 0)`, "
              f"not `{_last.splitlines()[0]}`")
