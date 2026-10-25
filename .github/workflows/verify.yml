@@ -39,6 +39,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      # numpy for the suite's ndarray, qconfluence and qregime sections, at the version the Mac
+      # runs them with (2.0.2 on 2026-10-25). Without numpy those sections are SKIP and the
+      # suite still exits 0, so the last line fails the job when anything was skipped.
+      - name: Install numpy
+        run: python -m pip install --disable-pip-version-check numpy==2.0.2
+
       - name: Run the test suite
         run: |
-          python tests/test_all.py
+          python tests/test_all.py > "$RUNNER_TEMP/suite.out" || { cat "$RUNNER_TEMP/suite.out"; exit 1; }
+          cat "$RUNNER_TEMP/suite.out"
+          grep -q "sections skipped 0$" "$RUNNER_TEMP/suite.out" || { echo "a section was skipped, so its numpy checks did not run"; exit 1; }
