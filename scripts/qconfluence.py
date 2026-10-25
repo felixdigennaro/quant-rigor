@@ -30,8 +30,11 @@ THE FIVE GATES, in order. Each can kill the finding, and killing early saves the
      going to size by confluence, you need the slope, not one bucket's mean.
 
   2. NULL CALIBRATION OF THE SEARCH.
-     Re-run the entire search on shuffled P&L, many times. Your t is evidence only if it
-     beats that distribution's 95th percentile.
+     Shuffle the P&L in blocks, rebuild the score with the SAME function that built it,
+     recompute the SAME slope t. Many times. |t| is evidence only if it beats the 95th
+     percentile of that distribution. A score fixed before looking at the P&L keeps its
+     score and shuffles only the P&L. Given neither the function nor that promise, the
+     gate is not run and the verdict is NON DECIDIBILE.
 
   3. OUT-OF-SAMPLE.
      Select on the first part, apply frozen to the last part. No re-tuning, no second pick.
@@ -186,6 +189,73 @@ def search_null(masks, pnl, n_rep=200, min_n=30, seed=0, train=None):
             "max": float(b.max()), "dist": b}
 
 
+def _block_shuffle(x, block, rng):
+    """Permute contiguous blocks of `block` periods (`block=1` is an iid shuffle). Keeps
+    the autocorrelation inside a block; an iid shuffle destroys it, and on persistent data
+    that makes the null's |t| too small for the real |t| to be compared with."""
+    nb = math.ceil(len(x) / block)
+    pos = (rng.permutation(nb)[:, None] * block + np.arange(block)).ravel()
+    return x[pos[pos < len(x)]]
+
+
+def _slope_t(score, P):
+    """OLS slope t of each row of `P` on the standardised `score`. NaN where the score has
+    no variance, the fit has no residual, or fewer than 3 periods."""
+    s = np.asarray(score, float)
+    P = np.atleast_2d(np.asarray(P, float))
+    n = s.size
+    sd = s.std(ddof=1) if n > 2 else 0.0
+    if not sd > 0:
+        return np.full(P.shape[0], np.nan)
+    z = (s - s.mean()) / sd
+    Pc = P - P.mean(1, keepdims=True)
+    b = (Pc @ z) / (n - 1)
+    rss = (Pc ** 2).sum(1) - b ** 2 * (n - 1)
+    se = np.sqrt(np.maximum(rss, 0.0) / (n - 2) / (n - 1))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(se > 0, b / se, np.nan)
+
+
+def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed):
+    """Gate 2 of `confluence_gate`: (verdict or None when not run, the `search_null` record).
+
+    The real statistic is the slope t of `pnl` on `score`. The null shuffles `pnl` in
+    blocks and recomputes the same t on the score that `build_score` rebuilds from the
+    shuffled P&L, so the null repeats the search and carries its selection bias; a
+    pre-registered score stays fixed. Two-sided: |t| against the 95th percentile of |t|.
+    """
+    if build_score is None and not preregistered:
+        return None, {"note": "cancello 2 non eseguito: passare build_score (la funzione che "
+                              "ha costruito il punteggio, per ripetere la ricerca sul P&L "
+                              "permutato) oppure preregistered=True (punteggio fissato prima "
+                              "di guardare questo P&L)"}
+    if build_score is not None:
+        rebuilt = np.asarray(build_score(masks, pnl), float)
+        if rebuilt.shape != score.shape or not np.allclose(rebuilt, score, equal_nan=True):
+            return None, {"note": "build_score(masks, pnl) non ricostruisce score: il nullo "
+                                  "ripeterebbe una ricerca diversa da quella che ha prodotto "
+                                  "il punteggio"}
+    rng = np.random.default_rng(seed)
+    P = np.stack([_block_shuffle(pnl, block, rng) for _ in range(n_rep)])
+    if build_score is not None:
+        t_null = np.array([_slope_t(build_score(masks, p), p)[0] for p in P])
+    else:
+        t_null = _slope_t(score, P)
+    real = float(_slope_t(score, pnl)[0])
+    fin = t_null[np.isfinite(t_null)]
+    n_fin, n_dis = len(fin), len(np.unique(fin))
+    if not np.isfinite(real) or 2 * min(n_fin, n_dis) < n_rep:
+        return None, {"note": f"nullo degenere: su {n_rep} estrazioni {n_fin} hanno un t finito "
+                              f"e {n_dis} distinto, e il t reale è {real}; servono t finiti e "
+                              f"distinti in almeno metà delle estrazioni (punteggio o P&L senza "
+                              f"varianza, o block={block} troppo grande per {len(pnl)} periodi)"}
+    a = np.abs(fin)
+    q95 = float(np.percentile(a, 95))
+    return abs(real) > q95, {"method": "replay" if build_score is not None else "preregistered",
+                             "two_sided": True, "block": block, "n_rep": n_rep,
+                             "real_abs_t": abs(real), "q95": q95, "median": float(np.median(a))}
+
+
 # ---------------------------------------------------------------- gate 5: concentration
 
 
@@ -246,15 +316,28 @@ def sizing_cost(weights):
 
 
 def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
-                    replication=None, min_n=30, seed=0):
+                    replication=None, seed=0, build_score=None, preregistered=False,
+                    block=25):
     """The five gates in order. Returns a verdict that DERIVES from them, not a summary.
 
-    `score`       per-period confluence strength (this is what you would size on)
-    `pnl`         per-period P&L of the base strategy
-    `masks`       every rule the search considered — needed for gate 2. Omit only if the
-                  confluence was pre-registered and NOT searched; say so explicitly.
-    `replication` (score, pnl) from a DIFFERENT instrument, rule frozen — gate 4
+    `score`         per-period confluence strength (this is what you would size on)
+    `pnl`           per-period P&L of the base strategy
+    `masks`         every rule the search considered; handed to `build_score` unchanged
+    `build_score`   `build_score(masks, pnl) -> score`, the function that built `score`.
+                    Gate 2 shuffles the P&L in blocks, rebuilds the score from it and
+                    recomputes the same slope t, `n_rep` times
+    `preregistered` True if `score` was fixed before looking at this P&L: gate 2 keeps the
+                    score and shuffles only the P&L. Contradicts `build_score`
+    `block`         periods per shuffled block (1 is an iid shuffle)
+    `replication`   (score, pnl) from a DIFFERENT instrument, rule frozen (gate 4)
+
+    Gate 2 is two-sided, |t| against the 95th percentile of |t| under its null, so a
+    falling dose-response can pass it as it can pass gates 1, 3 and 4. With neither
+    `build_score` nor `preregistered` the gate is not run and the verdict is NON DECIDIBILE.
     """
+    if build_score is not None and preregistered:
+        raise ValueError("build_score and preregistered=True contradict each other: a score "
+                         "the search built was not fixed before looking at the P&L")
     score = np.asarray(score, float)
     pnl = np.asarray(pnl, float)
     n = len(pnl)
@@ -266,23 +349,8 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     res["gates"]["1_dose_response"] = bool(dr.get("ok") and
                                            (dr.get("monotone_up") or dr.get("monotone_down")))
 
-    if masks is not None:
-        # search_null scores each rule's mean P&L against zero; the slope t compared with it
-        # ignores the base strategy's own mean. Uncentred, a profitable base raised the bar and
-        # a losing one lowered it (2026-10-25, 40 series per case: a real effect passed 0% of
-        # the time at base mean 1.0, pure noise 100% at -0.3). Centred, neither moves it.
-        # Limits this null still has (a score the search built, broad rules, two-valued P&L,
-        # trends in time) are measured in CHANGELOG v1.6.2.
-        nl = search_null(masks, pnl - pnl.mean(), n_rep=n_rep, min_n=min_n, seed=seed,
-                         train=slice(0, cut))
-        res["search_null"] = {k: v for k, v in nl.items() if k != "dist"}
-        real_t = dr.get("slope_t", float("nan"))
-        res["gates"]["2_beats_own_null"] = bool(nl.get("ok") and real_t == real_t
-                                                and real_t > nl["q95"])
-    else:
-        res["gates"]["2_beats_own_null"] = None
-        res["search_null"] = {"note": "nessuna maschera fornita — vale SOLO se la confluenza "
-                                      "era pre-registrata e non cercata. Dichiararlo."}
+    res["gates"]["2_beats_own_null"], res["search_null"] = _own_null(
+        score, pnl, masks, build_score, preregistered, n_rep, block, seed)
 
     dr_tr = dose_response(score[:cut], pnl[:cut], n_buckets=n_buckets)
     dr_te = dose_response(score[cut:], pnl[cut:], n_buckets=n_buckets)

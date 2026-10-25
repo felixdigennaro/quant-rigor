@@ -1023,26 +1023,147 @@ else:
     ok("jackknife_sign: one outlier carrying the mean is caught",
        not _jk.get("sign_survives_all") and _jk.get("worst_mean", float("nan")) == -1.0)
 
-    # The whole gate, both directions, on base strategies whose own mean is not zero.
+    # The whole gate on base strategies whose own mean is not zero. The score is drawn before
+    # the P&L, so it is pre-registered: gate 2 keeps it and shuffles only the P&L.
     def _book(seed, effect, base, n=2000):
         g = _np.random.default_rng(seed)
         sc = g.integers(0, 4, n).astype(float)
         pn = base + effect * (sc - 1.5) + g.normal(0, 1, n)
-        masks = _np.array([sc >= k for k in range(4)] + [g.random(n) < 0.5 for _ in range(6)])
         rs = g.integers(0, 4, n).astype(float)
-        return sc, pn, masks, (rs, base + effect * (rs - 1.5) + g.normal(0, 1, n))
+        return sc, pn, (rs, base + effect * (rs - 1.5) + g.normal(0, 1, n))
 
-    _sc, _pn, _mk, _rep = _book(1, 0.25, 1.0)
-    _cg = QF.confluence_gate(_sc, _pn, masks=_mk, replication=_rep, n_rep=200)
+    def _gate(*a, **kw):
+        try:
+            return QF.confluence_gate(*a, **kw)
+        except Exception as e:  # a raise is a FAIL on the check that reads it, not a crash
+            return {"error": repr(e)}
+
+    def _gate2(res):
+        return res.get("gates", {}).get("2_beats_own_null", res.get("error", "missing"))
+
+    def _null(res, key):
+        return res.get("search_null", {}).get(key, float("nan"))
+
+    _sc, _pn, _rep = _book(1, 0.25, 1.0)
+    _cg = _gate(_sc, _pn, replication=_rep, preregistered=True)
     ok("confluence_gate: a planted effect on a profitable base passes all five gates",
-       all(_cg["gates"].values()) and _cg["verdict"].startswith("UTILIZZABILE"), str(_cg["gates"]))
-    _cg = QF.confluence_gate(_sc, _pn, masks=_mk, n_rep=200)
+       all(_cg.get("gates", {}).values()) and _cg.get("verdict", "").startswith("UTILIZZABILE"),
+       str(_cg.get("gates")))
+    _cg = _gate(_sc, _pn, preregistered=True)
     ok("confluence_gate: a gate not run gives NON DECIDIBILE, never a pass",
-       _cg["verdict"].startswith("NON DECIDIBILE") and "4_replicates" in _cg["verdict"], _cg["verdict"])
-    _sc, _pn, _mk, _rep = _book(2, 0.0, -0.3)
-    _cg = QF.confluence_gate(_sc, _pn, masks=_mk, replication=_rep, n_rep=200)
-    ok("confluence_gate: noise on a losing base does not beat its own null",
-       _cg["gates"]["2_beats_own_null"] is False and _cg["verdict"].startswith("NON USARE"), str(_cg["gates"]))
+       _cg.get("verdict", "").startswith("NON DECIDIBILE") and "4_replicates" in _cg.get("verdict", ""),
+       _cg.get("verdict"))
+
+    # The real statistic against the textbook OLS t in plain Python. Standardising the
+    # regressor leaves t unchanged, so the hand version regresses on the raw score.
+    def _ols_t(x, y):
+        n = len(x)
+        mx, my = sum(x) / n, sum(y) / n
+        sxx = sum((a - mx) ** 2 for a in x)
+        b = sum((a - mx) * (v - my) for a, v in zip(x, y)) / sxx
+        rss = sum((v - my - b * (a - mx)) ** 2 for a, v in zip(x, y))
+        return b / math.sqrt(rss / (n - 2) / sxx)
+
+    _sc, _pn, _rep = _book(3, 0.1, 0.5)
+    _pre = _gate(_sc, _pn, preregistered=True)
+    close("confluence_gate: real_abs_t is the OLS |t| of the P&L on the score",
+          _null(_pre, "real_abs_t"), abs(_ols_t(_sc.tolist(), _pn.tolist())), 1e-9)
+    _cg = _gate(_np.full(2000, 2.0), _pn, preregistered=True)
+    ok("confluence_gate: a constant score leaves gate 2 not run, never failed",
+       _gate2(_cg) is None and "note" in _cg.get("search_null", {}), str(_gate2(_cg)))
+    _cg = _gate(_sc, _pn, preregistered=True, block=5000)
+    ok("confluence_gate: a block longer than the series cannot shuffle, so gate 2 is not run",
+       _gate2(_cg) is None and "note" in _cg.get("search_null", {}), str(_gate2(_cg)))
+
+    # The pre-registered null on iid noise, shuffled one period at a time, is |t(1998)|:
+    # median 0.6745, 95th percentile 1.961. Monte Carlo SE over 1000 draws: 0.025 and 0.06.
+    _g = _np.random.default_rng(2)
+    _cg = _gate(_g.integers(0, 4, 2000).astype(float), _g.normal(0, 1, 2000),
+                preregistered=True, n_rep=1000, block=1)
+    close("confluence_gate: the pre-registered null's median |t| on iid noise = 0.6745",
+          _null(_cg, "median"), _t_quantile(0.75, 1998), 0.08)
+    close("confluence_gate: the pre-registered null's q95 of |t| on iid noise = 1.961",
+          _null(_cg, "q95"), _t_quantile(0.975, 1998), 0.2)
+
+    # Pre-registered noise on a losing base, 20 series: gate 2 runs on every one and passes
+    # at most 4 (5% nominal, measured 10 of 200). The calibration checks above pin the null's
+    # scale; this one pins that the verdict follows it on a base whose mean is not zero.
+    _v = [_gate2(_gate(*_book(s, 0.0, -0.3)[:2], preregistered=True))
+          for s in range(100, 120)]
+    ok("confluence_gate: pre-registered noise on a losing base passes gate 2 at most 4 times in 20",
+       all(isinstance(v, bool) for v in _v) and sum(v is True for v in _v) <= 4, str(_v))
+
+    # A score the SEARCH built: the 3 of 100 random 50% masks with the highest one-sample t
+    # of the P&L on the first 60% of periods, score = how many of the 3 are on. Replaying the
+    # search on the shuffled P&L puts the selection bias into the null (q95 about 4, not 2),
+    # so noise passes at most 5 of 20 (measured 15 of 200).
+    def _search3(masks, pnl):
+        sub = masks[:, :1200].astype(float)
+        p = pnl[:1200]
+        cnt = sub.sum(1)
+        mean = (sub @ p) / cnt
+        var = ((sub @ (p ** 2)) / cnt - mean ** 2) * cnt / (cnt - 1)
+        return masks[_np.argsort(mean / _np.sqrt(var / cnt))[-3:]].sum(0).astype(float)
+
+    def _searched(seed, effect, n=2000):
+        g = _np.random.default_rng(seed)
+        masks = g.random((100, n)) < 0.5
+        pn = g.normal(0, 1, n) + effect * masks[:3].sum(0)
+        return masks, pn, _search3(masks, pn)
+
+    _v = []
+    for _s in range(200, 220):
+        _mk, _pn, _sc = _searched(_s, 0.0)
+        _v.append(_gate2(_gate(_sc, _pn, masks=_mk, build_score=_search3, n_rep=100)))
+    ok("confluence_gate: a searched noise score with its search replayed passes gate 2 at most 5 times in 20",
+       all(isinstance(v, bool) for v in _v) and sum(v is True for v in _v) <= 5, str(_v))
+
+    _mk, _pn, _sc = _searched(300, 0.3)
+    _rep_ = _gate(_sc, _pn, masks=_mk, build_score=_search3, n_rep=100)
+    ok("confluence_gate: a planted effect on the 3 masks the search finds beats the replayed null",
+       _gate2(_rep_) is True, f"|t| {_null(_rep_, 'real_abs_t'):.2f} vs q95 {_null(_rep_, 'q95'):.2f}")
+    ok("confluence_gate: the search_null record names its method",
+       _null(_rep_, "method") == "replay" and _null(_pre, "method") == "preregistered"
+       and _null(_rep_, "two_sided") is True and _null(_rep_, "block") == 25,
+       f"{_null(_rep_, 'method')} / {_null(_pre, 'method')}, two_sided {_null(_rep_, 'two_sided')}")
+    _cg = _gate(_sc, _pn, masks=_mk, n_rep=100)
+    ok("confluence_gate: a searched score with neither build_score nor preregistered leaves gate 2 not run",
+       _gate2(_cg) is None and _cg.get("verdict", "").startswith("NON DECIDIBILE")
+       and "2_beats_own_null" in _cg.get("verdict", ""), _cg.get("verdict"))
+    _cg = _gate(_sc, _pn, masks=_mk, n_rep=100, build_score=lambda m, p: _search3(m, p)[::-1])
+    ok("confluence_gate: a build_score that does not rebuild the score leaves gate 2 not run",
+       _gate2(_cg) is None and "note" in _cg.get("search_null", {}), str(_gate2(_cg)))
+    try:
+        QF.confluence_gate(_sc, _pn, masks=_mk, build_score=_search3, preregistered=True)
+        _err = None
+    except Exception as e:  # a wrong exception type is a FAIL, not a crash
+        _err = e
+    ok("confluence_gate: build_score with preregistered=True is refused",
+       isinstance(_err, ValueError), repr(_err))
+
+    _sc, _pn, _rep = _book(4, -0.25, 1.0)
+    _cg = _gate(_sc, _pn, preregistered=True)
+    ok("confluence_gate: a falling dose-response beats the two-sided null",
+       _gate2(_cg) is True, f"|t| {_null(_cg, 'real_abs_t'):.2f} vs q95 {_null(_cg, 'q95'):.2f}")
+
+    # Persistent data, no effect: P&L AR(0.6), score = quartile of an AR(0.97) series. The
+    # slope t is inflated on such data, so the null must be too. Blocks of 25 keep the
+    # persistence; an iid shuffle destroys it (q95 ratio 1.46 to 2.30 over 40 series).
+    def _ar(g, phi, n):
+        x = _np.empty(n)
+        x[0] = g.normal()
+        for i in range(1, n):
+            x[i] = phi * x[i - 1] + g.normal()
+        return x
+
+    _g = _np.random.default_rng(7)
+    _pn = _ar(_g, 0.6, 2000)
+    _x = _ar(_g, 0.97, 2000)
+    _sc = _np.searchsorted(_np.quantile(_x, [0.25, 0.5, 0.75]), _x).astype(float)
+    _q25 = _null(_gate(_sc, _pn, preregistered=True, block=25), "q95")
+    _q1 = _null(_gate(_sc, _pn, preregistered=True, block=1), "q95")
+    ok("confluence_gate: on persistent data the block null's q95 exceeds the iid null's by 25%+",
+       _q25 > 1.25 * _q1, f"block 25: {_q25:.2f}, iid: {_q1:.2f}")
 
 
 # ══════════════════════════════════ qregime: no edge works forever (§5c)
