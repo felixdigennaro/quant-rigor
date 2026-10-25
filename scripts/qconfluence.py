@@ -270,14 +270,6 @@ def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed)
                        f"1 li scarta, il cancello 2 non può permutare intorno a loro")
     if np.ptp(score) == 0 or np.ptp(pnl) == 0:
         return not_run("punteggio o P&L senza varianza: non c'è una pendenza da misurare")
-    # With nb blocks one shuffle in nb! is the series itself and ties the real t, so the
-    # p-value cannot fall below about 1/nb!: an evident |t| 12 effect got p 0.51 with 2 blocks
-    # and 0.16 with 3 (2026-10-25). Below 5 blocks that is the caller's block, not the data.
-    nb = math.ceil(n / block)
-    if nb < 5:
-        return not_run(f"block={block} su {n} periodi fa {nb} blocchi: con meno di 5 una "
-                       f"permutazione su {math.factorial(nb)} è la serie stessa e lascia anche "
-                       f"un effetto evidente vicino o sopra p 0.05; ridurre block")
     if n_rep < 19:
         return not_run(f"n_rep={n_rep}: il p-value di permutazione è almeno 1/(1+n_rep) e non "
                        f"può scendere a 0.05 sotto 19 estrazioni; è un difetto della chiamata, "
@@ -338,7 +330,8 @@ def _own_null(score, pnl, masks, build_score, preregistered, n_rep, block, seed)
     # mathematics and only up to a BLAS kernel's rounding in floating point. A null that ties
     # the real on more than 5% of its draws cannot pass whatever the data: a score with period
     # 5 under block 25 keeps every P&L value on its weekday, and an effect of |t| 20 came back
-    # p 1.0 (2026-10-25). That is the caller's block, not a finding.
+    # p 1.0; with 2 or 3 blocks the series itself is one shuffle in 2 or 6, and an evident
+    # |t| 12 effect got p 0.51 and 0.16 (2026-10-25). That is the caller's block, not a finding.
     ties = int((np.abs(a - ar) <= 1e-9 * ar).sum())
     if (1 + ties) / (1 + len(a)) > 0.05:
         return not_run(f"il nullo pareggia il t reale su {ties} di {len(a)} estrazioni: la "

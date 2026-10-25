@@ -1119,8 +1119,8 @@ else:
     ok("confluence_gate: a constant P&L leaves gate 2 not run, with a note on variance",
        _not_run(_cg, "senza varianza"), str(_cg.get("search_null")))
     _cg = _gate(_sc, _pn, preregistered=True, block=5000)
-    ok("confluence_gate: a block longer than the series makes one block, so gate 2 is not run",
-       _not_run(_cg, "blocchi"), str(_cg.get("search_null")))
+    ok("confluence_gate: a block longer than the series makes every shuffle the series itself, so the null ties the real and gate 2 is not run",
+       _not_run(_cg, "pareggia"), str(_cg.get("search_null")))
     _bad = _pn.copy()
     _bad[10] = float("nan")
     _cg = _gate(_sc, _bad, preregistered=True)
@@ -1388,11 +1388,12 @@ else:
     # The rule at its edges. n_rep=19 is the smallest null whose p-value reaches 0.05: a
     # planted effect above every draw has p = 1/20 and passes. On noise seed 406 one draw of
     # 29 reaches the real: p = 2/30 fails, where a bar at the 93rd percentile of the draws
-    # would pass. With fewer than 5 blocks the identity permutation, which ties the real, is
-    # so frequent that even an evident effect cannot pass: the gate is not run. With 5
-    # blocks it is 1 shuffle in 120; on seed 11 three of 200 are the series itself, and the
-    # batch kernel rounds all three one ulp below the single-row real (2026-10-25), so the
-    # tie needs the module's tolerance: with exact equality p would be 1/201, not 4/201.
+    # would pass. With 2 blocks the series itself is half the shuffles and ties the real, so
+    # even an evident effect cannot pass and the gate is not run; on seed 5 the batch kernel
+    # rounds those draws one ulp below the single-row real, so only the tolerance sees the
+    # ties. With 5 blocks it is 1 shuffle in 120; on seed 11 three of 200 are the series
+    # itself, rounded the same way (2026-10-25): with exact equality p would be 1/201, not
+    # 4/201.
     _sc, _pn = _book(1, 0.25, 1.0)[:2]
     _cg = _gate(_sc, _pn, preregistered=True, n_rep=19)
     ok("confluence_gate: n_rep=19 with the real above every draw is p = 0.05 exactly, which passes",
@@ -1403,8 +1404,8 @@ else:
        _null(_cg, "p") == 2 / 30 and _gate2(_cg) is False and _rule(_cg),
        f"p {_null(_cg, 'p')}, gate {_gate2(_cg)}")
     _cg = _gate(*_book(5, 0.25, 1.0)[:2], preregistered=True, block=1000)
-    ok("confluence_gate: 2 blocks cannot let an evident effect pass, so gate 2 is not run, with a note on blocks",
-       _not_run(_cg, "blocchi"), str(_cg.get("search_null")))
+    ok("confluence_gate: with 2 blocks the null ties an evident effect on half its draws, so gate 2 is not run, never failed",
+       _not_run(_cg, "pareggia"), str(_cg.get("search_null")))
     _cg = _gate(*_book(11, 0.25, 1.0)[:2], preregistered=True, block=400, seed=11)
     _real = _null(_cg, "real_abs_t")
     _ties = sum(abs(float(v) - _real) <= 1e-9 * _real
