@@ -1,5 +1,61 @@
 # Changelog
 
+## v2.1.2, la tabella di instradamento arriva alla 70, e le formule 50-70 hanno un numero solo (2026-10-26)
+
+`references/routing-table.md`, da cui SKILL.md dice di partire, non portava a nessuna formula
+oltre la 49. Alla domanda sui costi rispondeva con la 16 e la 43, e non con gli stimatori della
+v1.4 che li misurano dalle barre. Alla ricerca su varianti vicine rispondeva con DSR e PBO, e
+non con RAS.
+
+**La tabella di instradamento** ora ha:
+- ogni formula dalla 50 alla 70 in almeno una riga della tabella delle domande;
+- due righe per §5b (`confluence_gate`) e §5c (`regime_report`), che non hanno un numero;
+- le formule nuove nelle fasi di lavoro, più una fase per quando il conto vero non torna col
+  simulatore (54);
+- `qmicro`, `qpairs`, `qclaim`, `qconfluence` e `qregime` nella tabella dei moduli;
+- una tabella che dice dove sono spiegate le formule che non stanno in `references/` (60-67, 69
+  e 70).
+
+**Numeri doppi nei commenti di sezione del codice.** Il riferimento resta questo CHANGELOG, e
+il codice si allinea:
+- `qstats.py`: la sezione 60 conteneva le tre guardie 60-62. Ora ognuna ha il suo commento
+  (60 soglia raggiungibile, 61 tasso di eventi, 62 scala logaritmica). La sezione «61. anni per
+  decidere» (`years_to_decide`, `literature_queue`), mai numerata qui, diventa la **69**.
+- `qmicro.py`: le guardie della 63 (`plausibility_flag`, `sign_flip_parameter`,
+  `borrowed_parameter`) stavano sotto il commento della 52. Ora hanno il loro, e il 52 marca solo
+  `bounce_check`. La sezione «60. operabilità dell'ingresso» (`unfillable_share`), anch'essa mai
+  numerata qui, diventa la **70**.
+- `qportfolio.py`: la breadth con guardia era 61 nel codice e 64 qui. Ora è 64 anche nel codice.
+- `references/08-microstructure-costs.md`: la 52 (`bounce_check`) ha il suo numero nel titolo.
+
+**Un difetto del codice e uno della documentazione, trovati dalle revisioni indipendenti delle
+righe nuove.**
+- `qmicro.max_trade_frequency` restituiva `inf` anche quando lo Sharpe lordo era pari o sotto
+  l'obiettivo con un costo positivo. Lo Sharpe netto scende a ogni operazione in più, quindi in
+  quel caso nessuna frequenza raggiunge l'obiettivo, e ora restituisce 0.0; con costo zero
+  restituisce 0.0 se il lordo resta sotto l'obiettivo. Con `max_trade_frequency(0.5, 1.0, 0.01,
+  0.1)` dava `inf`, mentre `cost_cliff` a un milione di operazioni dà uno Sharpe netto di −99.5.
+  Ora rifiuta anche `sd_per_trade <= 0` con `ValueError`, come `cost_cliff` rifiuta lo stesso
+  valore. Prima, con sd zero e lordo sopra l'obiettivo, restituiva 0, che adesso vuol dire
+  «nessuna frequenza». Il docstring e il file 08 dicono anche che con un rimborso (costo
+  negativo) il tetto è infinito, ma un lordo sotto l'obiettivo richiede una frequenza minima,
+  che la funzione non calcola. Otto check nuovi fissano i casi.
+- Documentazione di `qmicro.decompose_slippage`: le due slippage e la commissione sono definite
+  in modo da sommare esattamente lo scarto, quindi `unexplained_residual` è zero a meno degli
+  arrotondamenti, per costruzione. `references/08-microstructure-costs.md` diceva che un residuo
+  diverso da zero rivela un modello del trade sbagliato, ma il residuo non può farlo. Il codice
+  resta com'è; ora il documento e il docstring dicono di confrontare `realised_pnl` con il
+  conto.
+
+**Corretto anche un numero.** Il docstring di `years_to_decide` diceva che uno Sharpe di 0.35
+richiede 31 anni per arrivare a t=2, e 175 dopo la decadenza; SKILL.md §1b diceva 0.35 e 31
+anni. Per 0.35 la funzione dà 32.65 anni, e 185.1 dopo la decadenza. I 31 anni valgono per
+0.359, la mediana misurata che la tabella di §1b già riporta. Ora il docstring dice 0.359, 31
+anni e 176 dopo la decadenza (175.94), e SKILL.md dice 0.359 e 31 anni.
+
+Il codice eseguito cambia in `max_trade_frequency` e negli otto check nuovi della suite. Il
+resto sono commenti, docstring, documenti e il manifesto.
+
 ## v2.1.1, RAS prende il numero 68 e la descrizione non conta più le formule (2026-10-26)
 
 Il numero 38 indicava due formule. In `references/06-sizing-execution.md` la 38 è Kelly. RAS,

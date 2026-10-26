@@ -539,6 +539,9 @@ def reachable_threshold(window, threshold, ddof=0):
                      f"La regola non puo' sparare MAI. Serve finestra >= {need}.")}
 
 
+# ---------------------------------------------------------------- 61. tasso di eventi
+
+
 def event_rate_check(n_events, years, intended_per_year, tol=2.0, label="regola"):
     """Il tasso di eventi osservato corrisponde a quello che la regola INTENDE?
 
@@ -566,6 +569,9 @@ def event_rate_check(n_events, years, intended_per_year, tol=2.0, label="regola"
             "intended": intended_per_year, "ratio": ratio, "ok": bool(ok), "note": note}
 
 
+# ---------------------------------------------------------------- 62. scala logaritmica
+
+
 def log_to_simple(x):
     """Converte una metrica calcolata in spazio LOG in composta. Sembra banale: non lo e'.
 
@@ -577,7 +583,7 @@ def log_to_simple(x):
     """
     return math.exp(x) - 1.0
 
-# ---------------------------------------------------------------- 61. anni per decidere
+# ---------------------------------------------------------------- 69. anni per decidere
 
 
 # Decadenza post-pubblicazione misurata da McLean & Pontiff (2016) su 97 anomalie:
@@ -593,8 +599,8 @@ def years_to_decide(sharpe, t_target=2.0, decay=None, years_available=None):
     di scrivere il backtest, non dopo.
 
     Da `t = Sharpe x sqrt(anni)` segue `anni = (t_target / Sharpe)^2`. E' la domanda che
-    rende molte analisi inutili prima ancora di cominciare: uno Sharpe di 0.35 — la mediana
-    delle strategie pubblicate — richiede **31 anni** per t=2, e 175 anni dopo la decadenza
+    rende molte analisi inutili prima ancora di cominciare: uno Sharpe di 0.359 — la mediana
+    delle strategie pubblicate — richiede **31 anni** per t=2, e 176 anni dopo la decadenza
     post-pubblicazione. Scrivere quel backtest e' tempo speso per produrre un numero che non
     puo' decidere niente.
 
