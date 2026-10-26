@@ -1523,6 +1523,320 @@ else:
     ok("confluence_gate: on persistent data the block null's q95 exceeds the iid null's by 25%+",
        _q25 > 1.25 * _q1, f"block 25: {_q25:.2f}, iid: {_q1:.2f}")
 
+    # Gate 5's second test checks the slope itself (jackknife_slope). Its reference is the
+    # definition in plain Python: c_i = z_i (p_i - mean p) over the periods whose score and
+    # P&L are finite, in time order; the share of Σc that its 3 largest terms in its direction
+    # carry; the smallest b_k / b over 20 contiguous blocks, split as np.array_split splits
+    # (the first n mod 20 blocks one period longer), the means recomputed on what is kept.
+    def _slope_ref(score, pnl, blocks=20):
+        pairs = [(a, b) for a, b in zip(score, pnl) if math.isfinite(a) and math.isfinite(b)]
+
+        def ols(ps):
+            ms, mp = sum(a for a, _ in ps) / len(ps), sum(b for _, b in ps) / len(ps)
+            return sum((a - ms) * (b - mp) for a, b in ps) / sum((a - ms) ** 2 for a, _ in ps)
+
+        n = len(pairs)
+        ms, mp = sum(a for a, _ in pairs) / n, sum(b for _, b in pairs) / n
+        c = [(a - ms) * (b - mp) for a, b in pairs]
+        d = 1 if sum(c) > 0 else -1
+        sizes = [n // blocks + (k < n % blocks) for k in range(blocks)]
+        starts = [sum(sizes[:k]) for k in range(blocks)]
+        full = ols(pairs)
+        return (sum(sorted(d * v for v in c)[-3:]) / abs(sum(c)),
+                min(ols(pairs[:s] + pairs[s + m:]) / full for s, m in zip(starts, sizes)))
+
+    def _slope(*a, **kw):
+        try:
+            return QF.jackknife_slope(*a, **kw)
+        except Exception as e:  # a raise is a FAIL on the check that reads it, not a crash
+            return {"error": repr(e)}
+
+    def _bucket_alone(c):
+        """the bucket test alone, read from the record"""
+        return (c.get("bucket_mean", 0.0) > 0 and c.get("sign_survives_all") is True
+                and c.get("top3_share", 1.0) < 0.5)
+
+    def _gates_1_to_4(res):
+        return all(res.get("gates", {}).get(k) is True for k in
+                   ("1_dose_response", "2_beats_own_null", "3_out_of_sample", "4_replicates"))
+
+    # 103 periods with a NaN in the P&L at period 40 and an inf in the score at period 77 leave
+    # 101 finite periods, split into a first block of 6 and 19 blocks of 5.
+    _g = _np.random.default_rng(21)
+    _sc = _g.permutation(_np.repeat([0.0, 1.0, 2.0, 3.0], 26))[:103]
+    _pn = 0.4 + 0.3 * (_sc - 1.5) + _g.normal(0, 1, 103)
+    _pn[40], _sc[77] = float("nan"), float("inf")
+    with _np.errstate(invalid="ignore"):   # the sizing's z-score of an inf score warns; not under test
+        _c = _gate(_sc, _pn, preregistered=True).get("concentration", {})
+    _ref = _slope_ref(_sc.tolist(), _pn.tolist())
+    close("confluence_gate: slope_top3_share is the top-3 share of the slope's numerator over the finite periods (plain Python)",
+          _c.get("slope_top3_share", float("nan")), _ref[0], 1e-9)
+    close("confluence_gate: slope_block_min_ratio is the smallest b_k / b over 20 contiguous blocks of the finite periods (plain Python)",
+          _c.get("slope_block_min_ratio", float("nan")), _ref[1], 1e-9)
+    ok("confluence_gate: the record counts 20 slope blocks", _c.get("slope_blocks") == 20,
+       str(_c.get("slope_blocks")))
+
+    # Here three crash days of -60 sit in the score-0 bucket, the one a rising sizing weights
+    # DOWN, on an effect of 0.03 per level (two crashes in the first 60% of the periods, one
+    # after). Seed 0
+    # passes gates 1-4 with its replication and passes the bucket test, and the crashes carry
+    # 69% of the slope's numerator. Its verdict was UTILIZZABILE before the slope test, as on
+    # 63 of 200 such datasets in the lead's bench (2026-10-25). With the score negated the
+    # relation falls, the crashes sit in the top bucket, the bottom one is examined, and the
+    # numbers are the same.
+    def _crashes(seed, sign):
+        g = _np.random.default_rng(seed)
+
+        def one():
+            sc = g.integers(0, 4, 2000).astype(float)
+            pn = 0.1 + 0.03 * (sc - 1.5) + g.normal(0, 1, 2000)
+            low = _np.flatnonzero(sc == 0)
+            pn[list(g.choice(low[low < 1200], 2, replace=False))
+               + list(g.choice(low[low >= 1200], 1))] -= 60.0
+            return sign * sc, pn
+        return one(), one()
+
+    for _sign, _side in ((1.0, "top"), (-1.0, "bottom")):
+        (_sc, _pn), _rep = _crashes(0, _sign)
+        _cg = _gate(_sc, _pn, replication=_rep, preregistered=True)
+        _c = _cg.get("concentration", {})
+        ok(f"confluence_gate: three crash days in the down-weighted bucket ({_side} bucket examined) pass gates 1-4 and the bucket test, and fail gate 5 on the slope's top-3 share",
+           _gates_1_to_4(_cg) and _c.get("bucket") == _side and _bucket_alone(_c)
+           and _c.get("slope_top3_share", 0.0) >= 0.5 and _gate5(_cg) is False,
+           f"gates {_cg.get('gates')}, bucket {_c.get('bucket')}, slope share {_c.get('slope_top3_share')}")
+
+    # Here the whole effect lives in one 100-period window, periods 300-399 (the fourth of 20
+    # blocks). Seed 0 passes gates 1-4 with its replication and passes the bucket test, the
+    # slope's top-3 share is 0.10, and deleting that block leaves 18% of the slope.
+    def _one_window(seed):
+        g = _np.random.default_rng(seed)
+
+        def one():
+            sc = g.integers(0, 4, 2000).astype(float)
+            pn = 0.05 + g.normal(0, 1, 2000)
+            pn[300:400] += 0.9 * (sc[300:400] - 1.5)
+            return sc, pn
+        return one(), one()
+
+    (_sc, _pn), _rep = _one_window(0)
+    _cg = _gate(_sc, _pn, replication=_rep, preregistered=True)
+    _c = _cg.get("concentration", {})
+    ok("confluence_gate: an effect living in one 100-period window passes gates 1-4 and the bucket test, and fails gate 5 because deleting that block leaves less than half the slope",
+       _gates_1_to_4(_cg) and _bucket_alone(_c) and _c.get("slope_top3_share", 1.0) < 0.5
+       and _c.get("slope_block_min_ratio", 1.0) < 0.5 and _gate5(_cg) is False,
+       f"gates {_cg.get('gates')}, slope share {_c.get('slope_top3_share')}, block ratio {_c.get('slope_block_min_ratio')}")
+
+    # The rest of the sample falls (-0.1 per level) and periods 300-399 rise steeply (+4 per
+    # level), so the whole sample rises. On seed 1, deleting that block leaves a slope as large
+    # as the full one, reversed (ratio -1.04). The sign has to survive, not only the size.
+    _g = _np.random.default_rng(1)
+    _sc = _g.integers(0, 4, 2000).astype(float)
+    _pn = 1.0 - 0.1 * (_sc - 1.5) + _g.normal(0, 1, 2000)
+    _pn[300:400] += 4.0 * (_sc[300:400] - 1.5)
+    _cg = _gate(_sc, _pn, preregistered=True)
+    _c = _cg.get("concentration", {})
+    ok("confluence_gate: a block deletion that reverses the slope fails gate 5 even when what is left is as large as the slope",
+       _c.get("bucket") == "top" and _bucket_alone(_c) and _c.get("slope_top3_share", 1.0) < 0.5
+       and _c.get("slope_block_min_ratio", 0.0) <= -0.5 and _gate5(_cg) is False,
+       f"gate {_gate5(_cg)}, ratio {_c.get('slope_block_min_ratio')}, share {_c.get('slope_top3_share')}")
+
+    # These checks put each bound at its edge, with one knob on the same data (seed 1, effect
+    # 0.1 per level). Three crash days in the score-0 bucket put the slope's top-3 share at
+    # 0.495 with crashes of 54 and at 0.503 with crashes of 56. An extra effect in periods
+    # 300-399 puts the smallest block ratio at 0.504 with 1.9 per level and at 0.492 with 2.0,
+    # a ratio that keeps the sign. The other bound and the bucket test pass on all four.
+    def _edge(knob, x):
+        g = _np.random.default_rng(1)
+        sc = g.integers(0, 4, 2000).astype(float)
+        pn = 0.1 + 0.1 * (sc - 1.5) + g.normal(0, 1, 2000)
+        if knob == "crash":
+            pn[_np.flatnonzero(sc == 0)[[100, 250, 400]]] -= x
+        else:
+            pn[300:400] += x * (sc[300:400] - 1.5)
+        return sc, pn
+
+    for _name, _knob, _x, _band, _want in (
+            ("a slope top-3 share of 0.495 passes gate 5", "crash", 54.0, (0.49, 0.5), True),
+            ("a slope top-3 share of 0.503 fails gate 5", "crash", 56.0, (0.5, 0.51), False),
+            ("a smallest block ratio of 0.504 passes gate 5", "window", 1.9, (0.5, 0.51), True),
+            ("a smallest block ratio of 0.492 fails gate 5, though no deletion flips the sign",
+             "window", 2.0, (0.49, 0.5), False)):
+        _sc, _pn = _edge(_knob, _x)
+        _share, _ratio = _slope_ref(_sc.tolist(), _pn.tolist())
+        _at, _other = (_share, _ratio >= 0.5) if _knob == "crash" else (_ratio, _share < 0.5)
+        _cg = _gate(_sc, _pn, preregistered=True)
+        ok("confluence_gate: " + _name,
+           _band[0] <= _at < _band[1] and _other and _bucket_alone(_cg.get("concentration", {}))
+           and _gate5(_cg) is _want,
+           f"gate {_gate5(_cg)}, share {_share:.4f}, ratio {_ratio:.4f}")
+
+    # These two put each bound at exactly 0.5, in exact arithmetic and in floating point alike,
+    # since every value is a short binary fraction. The first fixture has 128 periods with the
+    # score 0-3 repeating, a P&L of 0.25 + (549/1024)·(score - 1.5), and three crash days of
+    # 18.3125 at score 0. Its crashes carry exactly half of the slope's numerator, which is not
+    # less than half. The second has 160 periods in 20 blocks of 8, a P&L of
+    # 1 + 0.25·(score - 1.5), and 20 times that slope in periods 40-47. Deleting that block
+    # leaves exactly half of the slope, which is enough.
+    import fractions as _fr
+    _sc = _np.tile([0.0, 1.0, 2.0, 3.0], 32)
+    _pn = 0.25 + 549 / 1024 * (_sc - 1.5)
+    _pn[[8, 60, 100]] -= 18.3125
+    _ref = _slope_ref([_fr.Fraction(v) for v in _sc], [_fr.Fraction(v) for v in _pn])
+    _cg = _gate(_sc, _pn, preregistered=True)
+    _c = _cg.get("concentration", {})
+    ok("confluence_gate: a slope top-3 share of exactly 0.5 fails gate 5, since the 3 periods must carry less than half",
+       _ref[0] == _fr.Fraction(1, 2) and _c.get("slope_top3_share") == 0.5 and _ref[1] >= 0.5
+       and _bucket_alone(_c) and _gate5(_cg) is False,
+       f"gate {_gate5(_cg)}, exact share {_ref[0]}, recorded {_c.get('slope_top3_share')}")
+    _sc = _np.tile([0.0, 1.0, 2.0, 3.0], 40)
+    _pn = 1.0 + 0.25 * (_sc - 1.5)
+    _pn[40:48] += 5.0 * (_sc[40:48] - 1.5)
+    _ref = _slope_ref([_fr.Fraction(v) for v in _sc], [_fr.Fraction(v) for v in _pn])
+    _cg = _gate(_sc, _pn, preregistered=True)
+    _c = _cg.get("concentration", {})
+    ok("confluence_gate: a smallest block ratio of exactly 0.5 passes gate 5, since half of the slope is enough",
+       _ref[1] == _fr.Fraction(1, 2) and _c.get("slope_block_min_ratio") == 0.5 and _ref[0] < 0.5
+       and _bucket_alone(_c) and _gate5(_cg) is True,
+       f"gate {_gate5(_cg)}, exact ratio {_ref[1]}, recorded {_c.get('slope_block_min_ratio')}")
+
+    # A score that varies only in periods 400-499 has no variance left once that block is
+    # deleted, so no slope is left, its ratio is NaN, and gate 5 fails. The bucket test passes
+    # and the slope's top-3 share is 0.11.
+    _g = _np.random.default_rng(0)
+    _sc = _np.zeros(2000)
+    _sc[400:500] = _g.integers(1, 4, 100)
+    _cg = _gate(_sc, 0.1 + 0.5 * _sc + _g.normal(0, 1, 2000), preregistered=True)
+    _c = _cg.get("concentration", {})
+    _r = _c.get("slope_block_min_ratio", 0.0)
+    ok("confluence_gate: a score that varies inside one block only fails gate 5, since deleting that block leaves no slope (ratio NaN)",
+       _r != _r and _bucket_alone(_c) and _c.get("slope_top3_share", 1.0) < 0.5
+       and _gate5(_cg) is False,
+       f"gate {_gate5(_cg)}, ratio {_r}, share {_c.get('slope_top3_share')}")
+
+    # jackknife_slope needs 3 periods per block, so 60 finite periods for 20 blocks, counted
+    # after the non-finite ones are dropped. Through confluence_gate, fewer than 60 finite
+    # periods leave no dose-response slope either, so gate 5 is not run before the slope test
+    # is reached.
+    _g = _np.random.default_rng(31)
+    _sc = _np.tile([0.0, 1.0, 2.0, 3.0], 16)[:61]
+    _pn = 0.5 * _sc + _g.normal(0, 1, 61)
+    _js = _slope(_sc[:60], _pn[:60])
+    ok("jackknife_slope: 60 finite periods, 3 per block, give a result", _js.get("ok") is True, str(_js))
+    _pn[[7, 30]] = [float("nan"), float("inf")]
+    _js = _slope(_sc, _pn)
+    ok("jackknife_slope: 61 periods of which 59 are finite are not a verdict, with a note naming 60",
+       _js.get("ok") is False and "60" in _js.get("note", ""), str(_js))
+    _cg = _gate(_sc, _pn, preregistered=True)
+    ok("confluence_gate: fewer than 60 finite periods leave gate 5 not run, with a note",
+       _gate5(_cg) is None and bool(_cg.get("concentration", {}).get("note")),
+       str(_cg.get("concentration")))
+
+    # A U-shaped P&L, exactly symmetric in the score, has a slope numerator of exactly 0 in
+    # floating point. There is no slope to attribute, and the sizing weights nothing up.
+    _cg = _gate(_np.tile([0.0, 1.0, 2.0, 3.0], 100), _np.tile([1.0, -1.0, -1.0, 1.0], 100),
+                preregistered=True)
+    ok("confluence_gate: a slope numerator of exactly 0 leaves gate 5 not run, with a note on the numerator",
+       _gate5(_cg) is None and "numeratore" in _cg.get("concentration", {}).get("note", ""),
+       str(_cg.get("concentration")))
+    # Zero in exact arithmetic but not in floating point: a constant P&L of 0.1 (whose mean is
+    # not representable) or the same U nudged by 1e-13. Compared with 0 exactly, the numerator
+    # of 1e-30 or 1e-13 was "a slope", its top-3 share read 4e13 and gate 5 failed
+    # (independent review, 2026-10-26).
+    _js = _slope(_np.tile([0.0, 1.0, 2.0, 3.0], 100), _np.full(400, 0.1))
+    ok("jackknife_slope: a constant P&L of 0.1 has no slope up to rounding, so it is not a verdict",
+       _js.get("ok") is False and "numeratore" in _js.get("note", ""), str(_js))
+    _u = _np.tile([1.0, -1.0, -1.0, 1.0], 100)
+    _u[7] += 1e-13
+    _cg = _gate(_np.tile([0.0, 1.0, 2.0, 3.0], 100), _u, preregistered=True)
+    ok("confluence_gate: a U nudged by 1e-13 leaves gate 5 not run, not failed on a share of 1e13",
+       _gate5(_cg) is None and "numeratore" in _cg.get("concentration", {}).get("note", ""),
+       str(_cg.get("concentration")))
+
+    # The edges of the block deletion, and the slope's direction, pinned against _slope_ref:
+    # an effect living only in the first block or only in the last (a minimum that skipped
+    # either one would pass them), a contribution AGAINST the slope larger than the 3rd one
+    # with it (a share taken on |c| would count it), and a split into 10 blocks instead of 20.
+    # At 2.0 per level, on seed 41, deleting the edge block is the minimum (-0.69 first,
+    # -0.88 last) and every other deletion keeps at least 0.98 of the slope; at 0.9 the last
+    # block's minimum was another block's, and skipping it changed nothing (2026-10-26).
+    def _edge(seed, first):
+        g = _np.random.default_rng(seed)
+        sc = g.integers(0, 4, 2000).astype(float)
+        pn = g.normal(0, 1, 2000)
+        win = slice(0, 100) if first else slice(1900, 2000)
+        pn[win] += 2.0 * (sc[win] - 1.5)
+        return sc, pn
+
+    for _first, _where in ((True, "first"), (False, "last")):
+        _sc, _pn = _edge(41, _first)
+        _js = _slope(_sc, _pn)
+        _ref = _slope_ref(_sc.tolist(), _pn.tolist())
+        ok(f"jackknife_slope: an effect living only in the {_where} block leaves less than half the slope when that block goes",
+           _js.get("block_min_ratio", 1.0) < 0.5 and abs(_js.get("block_min_ratio", 1.0) - _ref[1]) < 1e-9,
+           f"ratio {_js.get('block_min_ratio')} vs reference {_ref[1]}")
+    _g = _np.random.default_rng(43)
+    _sc = _g.integers(0, 4, 2000).astype(float)
+    _pn = 0.3 * (_sc - 1.5) + _g.normal(0, 1, 2000)
+    _i = int(_np.flatnonzero(_sc == 3)[0])
+    _pn[_i] = -30.0                                  # c = 1.5 * (-30 - mean): against a rising slope
+    _cs = (_sc - _sc.mean()) * (_pn - _pn.mean())
+    _js = _slope(_sc, _pn)
+    _ref = _slope_ref(_sc.tolist(), _pn.tolist())
+    ok("jackknife_slope: the top-3 share counts only contributions in the slope's direction, not the largest one against it",
+       abs(_cs[_i]) > _np.sort(_cs)[-3] and abs(_js.get("top3_share", -1.0) - _ref[0]) < 1e-9,
+       f"share {_js.get('top3_share')} vs reference {_ref[0]}, against {_cs[_i]:.1f}, 3rd with {_np.sort(_cs)[-3]:.1f}")
+    _sc, _pn = _edge(41, True)
+    _js = _slope(_sc, _pn, blocks=10)
+    _ref = _slope_ref(_sc.tolist(), _pn.tolist(), blocks=10)
+    ok("jackknife_slope: blocks=10 splits into 10 blocks and matches the reference",
+       _js.get("n_blocks") == 10 and abs(_js.get("block_min_ratio", 9.0) - _ref[1]) < 1e-9
+       and abs(_js.get("top3_share", 9.0) - _ref[0]) < 1e-9, str(_js))
+    ok("jackknife_slope: blocks=10 needs 30 finite periods: 29 are not a verdict, 30 are",
+       _slope(_sc[:29], _pn[:29], blocks=10).get("ok") is False
+       and "30" in _slope(_sc[:29], _pn[:29], blocks=10).get("note", "")
+       and _slope(_sc[:30], _pn[:30], blocks=10).get("ok") is True, "")
+    ok("jackknife_slope: blocks=1 is refused, since deleting a block needs 2",
+       "ValueError" in _slope(_sc, _pn, blocks=1).get("error", ""), str(_slope(_sc, _pn, blocks=1)))
+
+    # The rate check uses clean effects in seven families, with a median |slope t| of 5 to 8.
+    # Gate 5 failed 5 of 7000 such datasets, 1000 per family on the seeds from
+    # 10000·(family + 1), and none of these 70 (2026-10-25). At that rate 70 datasets fail
+    # twice or more with probability 0.12%; a gate 5 that failed 5% of clean effects would
+    # with probability 87%. At the lead's weaker effects (median |t| 3 to 5, 1000 per family)
+    # the slope test fails up to 4.8% of clean datasets; with normal noise and on persistent
+    # data, where it fails most, those datasets' realized |t| has a median of 0.7 to 1.4 and
+    # none passes gates 1-3. On the lead's seven clean fixtures of 200 datasets it turned no
+    # UTILIZZABILE verdict into another.
+    def _clean(kind, seed, n=2000):
+        g = _np.random.default_rng(seed)
+        if kind == "persistent":   # P&L AR(0.6), score the quartile of an AR(0.97) series
+            pn, x = _ar(g, 0.6, n), _ar(g, 0.97, n)
+            sc = _np.searchsorted(_np.quantile(x, [0.25, 0.5, 0.75]), x).astype(float)
+            return sc, 0.1 + 0.15 * (sc - 1.5) + 0.8 * pn
+        sc = g.integers(0, 4, n).astype(float)
+        if kind == "normal":
+            return sc, 0.1 + 0.1 * (sc - 1.5) + g.normal(0, 1, n)
+        if kind == "falling":
+            return sc, 0.1 - 0.1 * (sc - 1.5) + g.normal(0, 1, n)
+        if kind == "t(3)":
+            return sc, 0.1 + 0.12 * (sc - 1.5) + g.standard_t(3, n) / math.sqrt(3.0)
+        if kind == "t(2.5)":
+            return sc, 0.1 + 0.15 * (sc - 1.5) + g.standard_t(2.5, n) / math.sqrt(5.0)
+        if kind == "variance rising with the score":
+            sd = _np.array([1.0, 1.2, 1.6, 2.5])[sc.astype(int)]
+            return sc, 0.1 + 0.2 * (sc - 1.5) + g.normal(0, 1, n) * sd
+        if kind == "two-valued (TP/SL)":
+            return sc, _np.where(g.random(n) < 0.8 + 0.05 * (sc - 1.5), 1.0, -3.5)
+        raise ValueError(kind)
+
+    _kinds = ("normal", "falling", "t(3)", "t(2.5)", "variance rising with the score",
+              "two-valued (TP/SL)", "persistent")
+    _v = [_gate5(_gate(*_clean(_k, 10_000 * (_i + 1) + _j), preregistered=True))
+          for _i, _k in enumerate(_kinds) for _j in range(10)]
+    ok("confluence_gate: clean effects in seven families pass gate 5 at least 69 times in 70",
+       all(isinstance(v, bool) for v in _v) and sum(v is True for v in _v) >= 69,
+       f"{sum(v is True for v in _v)} passes, {sum(v is None for v in _v)} not run")
+
 
 # ══════════════════════════════════ qregime: no edge works forever (§5c)
 if _np is None:

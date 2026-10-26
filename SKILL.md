@@ -199,7 +199,8 @@ Load `references/` files as needed — **start with `routing-table.md`** (questi
   (monotone gradient across buckets, not a binary filter), `search_null` (what t your search
   produces on shuffled data — the bar your real t must clear), `confluence_gate` (the five gates,
   verdict derived not chosen; gate 2 replays your search through `build_score`, or takes
-  `preregistered=True`), `sizing_from_slope` + `sizing_cost` (weights from the fitted slope,
+  `preregistered=True`), `jackknife_slope` (is the slope carried by a few periods or by one
+  stretch of time), `sizing_from_slope` + `sizing_cost` (weights from the fitted slope,
   and what sizing costs you in Sharpe if the confluence is noise).
 - `scripts/qstats.py` also carries the **decidability gate** (§1b): `years_to_decide` (how many
   years this Sharpe needs to reach t=2, with and without publication decay) and
@@ -504,12 +505,15 @@ hypotheses with an economic mechanism over a wide automatic sweep.
 3. **Out-of-sample** — select on the first part, apply frozen to the rest. No re-tuning.
 4. **Independent replication** — same frozen rule, different instrument. In the measured case
    this is the gate that killed it, after gates 1-3 all passed.
-5. **Concentration** — jackknife the bucket the sizing would weight **up**: the top scores when
-   the slope rises, the bottom ones when it falls. It must make money, keep its sign on every
-   deletion and not owe half its total to three periods: an effect living in three periods is
-   a story about three periods. It does not see a slope that a few periods make in the
-   *other* bucket (three crash days in the down-weighted bucket: UTILIZZABILE 33 times in 100,
-   measured by an independent review); jackknifing the slope itself is the open fix.
+5. **Concentration** — two tests, both must pass. The bucket the sizing would weight **up**
+   (the top scores when the slope rises, the bottom ones when it falls) must make money, keep
+   its sign on every deletion and not owe half its total to three periods. And the slope
+   itself (`jackknife_slope`): the 3 periods that push it most must carry less than half of
+   it, and deleting any one of 20 contiguous time blocks must leave at least half of it, with
+   the same sign. An effect living in three periods is a story about three periods. Three
+   crash days in the *down-weighted* bucket used to make a slope the bucket test could not
+   see (UTILIZZABILE 63 times in 200; now 0). Wider concentrations still pass: the same loss
+   spread over 5 days or more, or an effect spread over two blocks or more (CHANGELOG v2.1.0).
 
 A gate **not executed** is not a gate passed: `confluence_gate` returns NON DECIDIBILE, never a
 positive, when replication is missing, or when gate 2 has neither `build_score` nor
