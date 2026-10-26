@@ -48,15 +48,16 @@ THE FIVE GATES, in order. Each can kill the finding, and killing early saves the
      Same frozen rule, different instrument. This is what killed the real case above.
 
   5. CONCENTRATION.
-     Does the effect live in 1-3 periods, or in one stretch of time? Two tests, and both
-     must pass. The bucket the sizing would weight UP (top score when the slope rises,
+     Does the effect live in 1-3 periods, or in one short stretch of time? Two tests, and
+     both must pass. The bucket the sizing would weight UP (top score when the slope rises,
      bottom score when it falls) must make money, keep its sign on every deletion, and not
      owe half its total to three periods. The slope itself is jackknifed too, because three
      crash days in the bucket the sizing weights DOWN make a slope that the sized-up bucket
      cannot see. The three periods that push the slope most must carry less than half of
      its numerator, and deleting any one of 20 contiguous time blocks must leave at least
      half of it, with the same sign. A confluence that only works on three days is a story
-     about three days.
+     about three days. What lives in five days or more, or in two blocks or more, still
+     passes: the tests catch the narrowest concentrations, not every one.
 
 ONLY IF ALL FIVE PASS does sizing follow — and then the weight comes from the fitted slope,
 capped, never from the ratio of bucket means (which is unbounded and noisy at the extremes).
@@ -390,8 +391,11 @@ def jackknife_slope(score, pnl, blocks=20):
     is the slope with block k deleted and the means recomputed on what is kept. It is
     negative when a deletion flips the sign, and NaN when a deletion leaves the score without
     variance. Periods with a non-finite score or P&L are dropped, in time order. Fewer than 3
-    periods per block, or a numerator of exactly 0, is not a verdict.
+    periods per block, or a numerator that is zero up to rounding (a score-P&L correlation
+    below 1e-12), is not a verdict. `blocks` must be at least 2.
     """
+    if blocks < 2:
+        raise ValueError(f"blocks={blocks}: deleting one block needs at least 2 of them")
     s = np.asarray(score, float)
     p = np.asarray(pnl, float)
     m = np.isfinite(s) & np.isfinite(p)
@@ -401,11 +405,15 @@ def jackknife_slope(score, pnl, blocks=20):
         return {"ok": False, "note": f"servono almeno {3 * blocks} periodi con punteggio e P&L "
                                      f"finiti, 3 per blocco, e ce ne sono {n}"}
     z = s - s.mean()
-    c = z * (p - p.mean())
+    pc = p - p.mean()
+    c = z * pc
     num = float(c.sum())
-    if num == 0:
-        return {"ok": False, "note": "il numeratore della pendenza è esattamente 0, quindi non "
-                                     "c'è una pendenza da attribuire ai periodi"}
+    # Zero in exact arithmetic comes out as rounding: a constant P&L of 0.1 left 1.5e-30, the
+    # share read 4e13 and failed the gate (2026-10-26). |num| / scale is the correlation.
+    if not abs(num) > 1e-12 * math.sqrt(float(z @ z) * float(pc @ pc)):
+        return {"ok": False, "note": "il numeratore della pendenza è zero a meno degli "
+                                     "arrotondamenti, quindi non c'è una pendenza da attribuire "
+                                     "ai periodi"}
     b = num / float(z @ z)
     ratios = []
     for blk in np.array_split(np.arange(n), blocks):
@@ -490,7 +498,8 @@ def confluence_gate(score, pnl, masks=None, split=0.6, n_rep=200, n_buckets=5,
     contiguous time blocks must leave at least half of it, with the same sign.
     `res["concentration"]` carries both tests, the slope's as `slope_top3_share`,
     `slope_block_min_ratio` and `slope_blocks`. Gate 5 is not run without a dose-response
-    slope, with fewer than 60 finite periods, or with a slope numerator of exactly 0.
+    slope, with fewer than 60 finite periods, or with a slope numerator that is zero up to
+    rounding.
     """
     if build_score is not None and preregistered:
         raise ValueError("build_score and preregistered=True contradict each other: a score "

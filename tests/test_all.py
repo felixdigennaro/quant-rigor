@@ -1738,6 +1738,65 @@ else:
     ok("confluence_gate: a slope numerator of exactly 0 leaves gate 5 not run, with a note on the numerator",
        _gate5(_cg) is None and "numeratore" in _cg.get("concentration", {}).get("note", ""),
        str(_cg.get("concentration")))
+    # Zero in exact arithmetic but not in floating point: a constant P&L of 0.1 (whose mean is
+    # not representable) or the same U nudged by 1e-13. Compared with 0 exactly, the numerator
+    # of 1e-30 or 1e-13 was "a slope", its top-3 share read 4e13 and gate 5 failed
+    # (independent review, 2026-10-26).
+    _js = _slope(_np.tile([0.0, 1.0, 2.0, 3.0], 100), _np.full(400, 0.1))
+    ok("jackknife_slope: a constant P&L of 0.1 has no slope up to rounding, so it is not a verdict",
+       _js.get("ok") is False and "numeratore" in _js.get("note", ""), str(_js))
+    _u = _np.tile([1.0, -1.0, -1.0, 1.0], 100)
+    _u[7] += 1e-13
+    _cg = _gate(_np.tile([0.0, 1.0, 2.0, 3.0], 100), _u, preregistered=True)
+    ok("confluence_gate: a U nudged by 1e-13 leaves gate 5 not run, not failed on a share of 1e13",
+       _gate5(_cg) is None and "numeratore" in _cg.get("concentration", {}).get("note", ""),
+       str(_cg.get("concentration")))
+
+    # The edges of the block deletion, and the slope's direction, pinned against _slope_ref:
+    # an effect living only in the first block or only in the last (a minimum that skipped
+    # either one would pass them), a contribution AGAINST the slope larger than the 3rd one
+    # with it (a share taken on |c| would count it), and a split into 10 blocks instead of 20.
+    # At 2.0 per level, on seed 41, deleting the edge block is the minimum (-0.69 first,
+    # -0.88 last) and every other deletion keeps at least 0.98 of the slope; at 0.9 the last
+    # block's minimum was another block's, and skipping it changed nothing (2026-10-26).
+    def _edge(seed, first):
+        g = _np.random.default_rng(seed)
+        sc = g.integers(0, 4, 2000).astype(float)
+        pn = g.normal(0, 1, 2000)
+        win = slice(0, 100) if first else slice(1900, 2000)
+        pn[win] += 2.0 * (sc[win] - 1.5)
+        return sc, pn
+
+    for _first, _where in ((True, "first"), (False, "last")):
+        _sc, _pn = _edge(41, _first)
+        _js = _slope(_sc, _pn)
+        _ref = _slope_ref(_sc.tolist(), _pn.tolist())
+        ok(f"jackknife_slope: an effect living only in the {_where} block leaves less than half the slope when that block goes",
+           _js.get("block_min_ratio", 1.0) < 0.5 and abs(_js.get("block_min_ratio", 1.0) - _ref[1]) < 1e-9,
+           f"ratio {_js.get('block_min_ratio')} vs reference {_ref[1]}")
+    _g = _np.random.default_rng(43)
+    _sc = _g.integers(0, 4, 2000).astype(float)
+    _pn = 0.3 * (_sc - 1.5) + _g.normal(0, 1, 2000)
+    _i = int(_np.flatnonzero(_sc == 3)[0])
+    _pn[_i] = -30.0                                  # c = 1.5 * (-30 - mean): against a rising slope
+    _cs = (_sc - _sc.mean()) * (_pn - _pn.mean())
+    _js = _slope(_sc, _pn)
+    _ref = _slope_ref(_sc.tolist(), _pn.tolist())
+    ok("jackknife_slope: the top-3 share counts only contributions in the slope's direction, not the largest one against it",
+       abs(_cs[_i]) > _np.sort(_cs)[-3] and abs(_js.get("top3_share", -1.0) - _ref[0]) < 1e-9,
+       f"share {_js.get('top3_share')} vs reference {_ref[0]}, against {_cs[_i]:.1f}, 3rd with {_np.sort(_cs)[-3]:.1f}")
+    _sc, _pn = _edge(41, True)
+    _js = _slope(_sc, _pn, blocks=10)
+    _ref = _slope_ref(_sc.tolist(), _pn.tolist(), blocks=10)
+    ok("jackknife_slope: blocks=10 splits into 10 blocks and matches the reference",
+       _js.get("n_blocks") == 10 and abs(_js.get("block_min_ratio", 9.0) - _ref[1]) < 1e-9
+       and abs(_js.get("top3_share", 9.0) - _ref[0]) < 1e-9, str(_js))
+    ok("jackknife_slope: blocks=10 needs 30 finite periods: 29 are not a verdict, 30 are",
+       _slope(_sc[:29], _pn[:29], blocks=10).get("ok") is False
+       and "30" in _slope(_sc[:29], _pn[:29], blocks=10).get("note", "")
+       and _slope(_sc[:30], _pn[:30], blocks=10).get("ok") is True, "")
+    ok("jackknife_slope: blocks=1 is refused, since deleting a block needs 2",
+       "ValueError" in _slope(_sc, _pn, blocks=1).get("error", ""), str(_slope(_sc, _pn, blocks=1)))
 
     # The rate check uses clean effects in seven families, with a median |slope t| of 5 to 8.
     # Gate 5 failed 5 of 7000 such datasets, 1000 per family on the seeds from
