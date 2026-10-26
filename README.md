@@ -14,7 +14,7 @@ Works as a Claude Code / Claude Agent skill, and the Python side runs standalone
 ## Quickstart (30 seconds, no dependencies)
 
 ```bash
-python3 tests/test_all.py            # 255 assertions against independent references — ALL GREEN
+python3 tests/test_all.py            # checks against independent references; exits 1 if any fails
 python3 examples/demo_strategy.py    # full protocol on one strategy + writes an HTML report
 python3 examples/demo_portfolio.py   # portfolio risk: contributions, tail dependence, PCA
 ```
@@ -78,7 +78,7 @@ python3 scripts/qdata.py --symbol NQ=F
 | `scripts/qmontecarlo.py` | permutation, sign-flip, surrogate paths, White RC, Hansen SPA, moment stress |
 | `scripts/qdata.py` | the only networked module: public price history + your own CSV files |
 | `scripts/qreport.py` | assembles everything into one self-contained HTML report |
-| `tests/test_all.py` | 255 assertions vs **independent** references |
+| `tests/test_all.py` | assertions vs **independent** references; prints the passed and failed counts, exits 1 if any fails |
 | `examples/demo_strategy.py` | runnable end-to-end demo (single strategy) |
 | `examples/demo_portfolio.py` | runnable demo (multi-sleeve book, formulas 9-15) |
 
@@ -89,7 +89,8 @@ the concrete action. The third part is the one you're paying for.
 
 ## Design decisions worth knowing
 
-**Zero dependencies, stdlib only.** No numpy, scipy, pandas or matplotlib. It runs inside
+**Stdlib only, except `qconfluence` and `qregime`, which import numpy.** No scipy, pandas or
+matplotlib; the other scripts, the demos and the test suite run without numpy. It runs inside
 sandboxes, CI, restricted environments and agent runtimes where installing packages isn't an
 option. The t-distribution, inverse normal, bootstrap and all charts are implemented from scratch.
 Charts are emitted as self-contained SVG.

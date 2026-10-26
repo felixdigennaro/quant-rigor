@@ -321,3 +321,82 @@ if __name__ == "__main__":
     except (OSError, ValueError):
         data = json.loads(a.json)
     print(report(data, cap=a.cap))
+
+# ---------------------------------------------------------------- 61. breadth con guardia
+
+
+def effective_breadth(returns, weights=None):
+    """Scommesse EFFICACI, con la guardia che serve quando rho medio e' NEGATIVA.
+
+    ERRORE COMMESSO (2026-07-30): ho applicato N/(1+(N-1)*rho) a 7 strategie sullo STESSO
+    strumento con rho medio −0.067 e ottenuto **11.71 su 7**. Numero privo di significato
+    come "scommesse indipendenti", e la mia stessa prosa lo contraddiceva due righe sotto.
+
+    La formula misura RIDUZIONE DI VARIANZA, non "scommesse indipendenti con rendimento
+    atteso". Con rho negativa da > N, ed e' corretta come riduzione di varianza — ma leggerla
+    come breadth e' un errore, perche' due strategie che si ANNULLANO hanno rho = −1 e
+    "breadth infinita" mentre pagano due commissioni per tenere zero.
+
+    ⚠ NON TRASPORTARLA AL MULTIPLE TESTING (aggiunto 2026-08-01, correzione presa da una
+    sessione parallela). `N/(1+(N-1)rho)` e' la dimensione efficace per la VARIANZA DI UNA
+    MEDIA di variabili equicorrelate. Usarla per correggere la soglia sul MASSIMO di N test
+    e' un'euristica, non un risultato: la direzione e' giusta, la magnitudine no. Per la
+    penalita' da ricerca si usa RAS (`qvalidate.rademacher_complexity` +
+    `effective_trials`), che la MISURA dalle serie invece di dedurla da un rho ipotizzato.
+
+    LA FIRMA DELL'ANNULLAMENTO, da riportare sempre insieme al numero:
+        rho medio <= 0  E  PC1 alta  →  non e' decorrelazione, e' cancellazione reciproca.
+    In quel caso la domanda giusta non e' la breadth ma: quanto dell'esposizione LORDA
+    sopravvive nel netto, e i costi si sommano mentre i rendimenti si annullano?
+    """
+    names, rows, T = _as_matrix(returns)
+    N = len(rows)
+    if N < 2:
+        return {"n": N, "usable": False, "note": "servono >= 2 serie"}
+    _, C = corr_matrix(returns)
+    off = [C[i][j] for i in range(N) for j in range(N) if i != j]
+    rho = st.mean(off)
+    _, cov = cov_matrix(returns)
+    pc1 = pc1_share(cov)
+    w = [1.0 / N] * N if weights is None else [float(x) for x in weights]
+    sw = sum(abs(x) for x in w) or 1.0
+    w = [x / sw for x in w]
+    sd = [math.sqrt(cov[i][i]) if cov[i][i] > 0 else 0.0 for i in range(N)]
+    num = sum(abs(w[i]) * sd[i] for i in range(N)) ** 2
+    den = sum(w[i] * w[j] * cov[i][j] for i in range(N) for j in range(N))
+    var_ratio = (num / den) if den > 0 else float("nan")
+    naive = N / (1.0 + (N - 1) * rho) if (1.0 + (N - 1) * rho) > 0 else float("inf")
+    cancelling = (rho <= 0.0) and (pc1 > 0.35)
+    out = {"n": N, "mean_corr": rho, "pc1_share": pc1,
+           "variance_reduction_ratio": var_ratio, "naive_formula": naive,
+           "min_corr": min(off), "max_corr": max(off),
+           "valid_as_breadth": bool(rho > 0), "cancellation_signature": bool(cancelling)}
+    if rho <= 0:
+        out["breadth"] = None
+        out["note"] = (f"rho medio {rho:+.4f} <= 0: la formula da {naive:.2f} su {N} e NON va "
+                       "letta come breadth. E' riduzione di varianza. "
+                       + ("FIRMA DI CANCELLAZIONE (rho<=0 con PC1 al "
+                          f"{100*pc1:.0f}%): misura invece quanta esposizione lorda "
+                          "sopravvive nel netto — i costi si sommano, i rendimenti si "
+                          "annullano." if cancelling else
+                          "Verifica se le serie si annullano a vicenda."))
+    else:
+        out["breadth"] = naive
+        out["note"] = f"breadth {naive:.2f} su {N} ({100*naive/N:.0f}% di N)"
+    return out
+
+
+def diversification_sign_check(mean_per_period, label="portafoglio"):
+    """Diversificare con mu < 0 PEGGIORA lo Sharpe. Controllo del segno prima di applicarla.
+
+    MISURATO (2026-07-30): 7 strategie con Sharpe medio −0.87 aggregate danno −2.74, cioe'
+    PEGGIO della media delle parti. Non e' un paradosso: la diversificazione riduce il
+    DENOMINATORE, e con numeratore negativo amplifica il segno. Se la sd fosse rimasta a
+    livello di gamba lo Sharpe sarebbe stato −0.77 invece di −2.74.
+    """
+    ok = mean_per_period > 0
+    return {"mean": mean_per_period, "safe_to_diversify": bool(ok),
+            "note": ("ok: mu > 0, ridurre la varianza migliora lo Sharpe" if ok else
+                     "⚠ mu <= 0: diversificare RIDUCE il denominatore e PEGGIORA lo Sharpe. "
+                     "Non applicare tecniche di riduzione della varianza a un aggregato con "
+                     "expectancy negativa — prima si risolve il segno.")}

@@ -152,7 +152,11 @@ def surrogate_paths(returns, model="block_bootstrap", stat="sharpe", reps=5000, 
     obs = f(returns)
     rnd = random.Random(seed)
     mu, sd = st.mean(returns), st.stdev(returns)
-    centred = [v - mu for v in returns] if drift_zero else returns[:]
+    # list(), not returns[:]: with drift_zero=False and an ndarray input, `returns[:]` stays
+    # an ndarray and the block-bootstrap wrap below ADDS instead of concatenating — see the
+    # note in qstats.bootstrap(). drift_zero=True hid the bug because the comprehension
+    # already produced a list.
+    centred = [v - mu for v in returns] if drift_zero else list(returns)
     # OU parameters from a lag-1 regression on the cumulative level
     lvl = _cum(returns)
     theta = 0.0

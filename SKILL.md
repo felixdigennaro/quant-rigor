@@ -1,6 +1,6 @@
 ---
 name: quant-rigor
-description: Rigorous quantitative analysis of any trading or investment strategy — existing, proposed, or under evaluation. Applies 44 quant formulas (probability, linear algebra, stochastic calculus, pricing/risk, validation, sizing/execution) as working tools rather than decoration, each with its failure mode. Runs a measurability gate before any backtest, validates the simulator against reality, quantifies uncertainty (SE, t, bootstrap, jackknife, best-of-N headroom, Deflated Sharpe, PBO, HAC), runs an adversarial contrarian pass, and produces the charts that expose what tables hide. Use whenever a strategy, edge, backtest result, parameter change, sizing decision, or performance claim is on the table.
+description: Rigorous quantitative analysis of any trading or investment strategy — existing, proposed, or under evaluation. Applies 67 quant formulas (probability, linear algebra, stochastic calculus, pricing/risk, validation, sizing/execution, microstructure/costs, mean reversion, guards against silent failure) as working tools rather than decoration, each with its failure mode. Runs a measurability gate before any backtest, validates the simulator against reality, quantifies uncertainty (SE, t, bootstrap, jackknife, best-of-N headroom, Deflated Sharpe, RAS/Rademacher for correlated searches, PBO, HAC), estimates transaction costs from your own bars instead of assuming them, refuses to deliver a verdict that hinges on a number it has not measured itself, runs an adversarial contrarian pass, and produces the charts that expose what tables hide. Use whenever a strategy, edge, backtest result, parameter change, sizing decision, or performance claim is on the table.
 ---
 
 # Quant Rigor — analyse before you believe
@@ -29,13 +29,123 @@ or accounting of realised P&L already reconciled to an exchange balance (that's 
 
 ---
 
+## 0b. LE GUARDIE CONTRO IL FALLIMENTO SILENZIOSO — prima di tutto il resto
+
+Il resto di questo protocollo difende da **numeri sbagliati**. Questa sezione difende dalla
+classe che non produce numeri sbagliati affatto: **controlli che non possono scattare, regole
+che non possono sparare, verdetti che poggiano su un numero preso in prestito.** Non danno
+errore, non sembrano rotti, e assomigliano a risultati.
+
+Ogni guardia qui esiste perche' l'errore corrispondente e' stato commesso davvero, e ogni
+guardia ha un test che lo riproduce (`tests/test_all.py`, sezione v1.5).
+
+### G1 · La soglia e' raggiungibile? — `qstats.reachable_threshold`
+Uno z-score su finestra `W` ha un massimo **algebrico**: `sqrt(W-1)` con sd di popolazione,
+`(W-1)/sqrt(W)` con sd campionaria. Con `W=4` il massimo e' **1.73**: una regola `|z|>2` non
+puo' sparare **mai**. Risultato osservato: 0.0% del tempo in posizione, zero errori.
+> **Un test che non puo' scattare non e' un test superato: e' un test rotto, e somiglia a un
+> risultato negativo.** Chiamala prima di ogni backtest con una soglia su una statistica
+> normalizzata.
+
+### G2 · Il tasso di eventi corrisponde all'intenzione? — `qstats.event_rate_check`
+Due regole "una operazione al giorno" ne facevano 7.5 al giorno perche' mancava il flag
+"gia' fatto": 5 492 e 2 743 cambi/anno invece di ~730. Nessun errore, solo tutto il P&L a
+valle sbagliato. Chiamala **subito dopo aver generato i segnali e prima di guardare il P&L**.
+Zero eventi non e' un risultato negativo: e' una regola che non spara (→ G1).
+
+### G3 · La scala del numero che pubblichi — `qstats.log_to_simple`
+Drawdown calcolati su `cumsum` di log-rendimenti e stampati come percentuali: `−0.652` in log
+e' **−48%** reale, non −65%. Diciassette punti di errore su ogni riga di ogni tabella.
+> Qualunque metrica nata in spazio log si converte **prima** di pubblicarla, e la scala si
+> dichiara nell'etichetta.
+
+### G4 · Due guardie di plausibilita', e sapere quando una non si applica
+`qmicro.plausibility_flag` ora ne ha due, che coprono casi **disgiunti**:
+- **A · tick impliciti** — prende gli stimatori di microstruttura su barre grosse (ES daily:
+  62bp = 53 tick, respinta).
+- **B · quota del range di barra** — `stima / range_mediano > 0.5` e' **fisicamente
+  impossibile**, perche' ogni scambio che attraversa lo spread crea un range almeno pari.
+  Prende i casi in cui il tick e' molto piu' fine dello spread (BTC: 17.87bp = 2.9x il range).
+
+E la lezione che i test hanno tirato fuori dopo: **la guardia A va dichiarata non applicabile
+quando il tick e' troppo fine.** Su BTC anche lo spread VERO di 1bp implica 580 tick, quindi
+applicare A produce un **falso positivo** — respinge una stima corretta. Se nessuna guardia e'
+applicabile la funzione **non emette giudizio**, invece di emetterne uno sbagliato.
+
+### G5 · Il numero in prestito — `qmicro.borrowed_parameter`, `qmicro.sign_flip_parameter`
+**La lezione piu' costosa.** Un penalty di −9c preso dal README di un terzo decideva un
+verdetto. Misurato nel proprio contesto: **−44.3c, 4.9x piu' grande**, e per un **errore di
+categoria** — le sue posizioni erano chiudibili, quelle in esame erano binari tenuti a
+scadenza, senza uscita. Il verdetto si e' ribaltato.
+> **Un numero preso in prestito non e' un numero verificato.** Non e' assunto (quindi R1 non
+> lo prende) e non e' misurato da te. Regola:
+> 1. calcola la **soglia di ribaltamento** del parametro (`sign_flip_parameter`);
+> 2. se il ribaltamento cade **dentro** l'intervallo plausibile, **non consegnare il verdetto**
+>    — consegna la soglia, e vai a misurare;
+> 3. prima di prendere in prestito, cerca la **differenza di categoria** fra i due contesti,
+>    non solo quella di grandezza.
+
+### G6 · Breadth con rho negativa — `qportfolio.effective_breadth`
+`N/(1+(N-1)rho)` applicata a 7 strategie sullo stesso strumento con `rho = −0.067` ha dato
+**11.71 su 7**. La formula misura **riduzione di varianza**, non "scommesse indipendenti con
+rendimento atteso": due strategie che si **annullano** hanno `rho = −1` e breadth infinita
+mentre pagano due commissioni per tenere zero. La funzione ora **rifiuta** di chiamarla breadth
+quando `rho <= 0` e riporta la **firma della cancellazione**: `rho <= 0` **insieme a** PC1 alta.
+In quel caso la domanda giusta non e' la breadth ma: quanta esposizione **lorda** sopravvive
+nel netto? (I costi si sommano, i rendimenti si annullano.)
+
+### G7 · Il segno prima della diversificazione — `qportfolio.diversification_sign_check`
+Sette strategie con Sharpe medio **−0.87** aggregate danno **−2.74**, peggio della media delle
+parti. Non e' un paradosso: diversificare riduce il **denominatore**, e con numeratore negativo
+amplifica il segno. **Le tecniche di riduzione della varianza si applicano solo dopo aver
+risolto il segno di mu.**
+
+### G8 · Hai scaricato quello che credi? (vale per qualunque fonte esterna)
+Una query ordinata per data decrescente ha restituito mercati **a 24 ore nel futuro**; i loro
+book erano segnaposto seminati dal market maker, e quattro minuti di polling stavano per
+diventare la conclusione "il libro e' statico". Prima di **qualunque** inferenza su dati
+esterni: **timestamp contro adesso, volume/trade diversi da zero, e almeno un caso di
+controllo noto.** Un guasto di raccolta non e' un verdetto sul dato (R8).
+
+### G9 · La prosa non puo' contraddire la tabella
+Due volte nella stessa sessione il commento ha affermato il contrario del numero stampato due
+righe sopra ("11.71 resta sotto 8.37"; "salva il 60-70%" con 25% misurato).
+> Ogni numero nella prosa **si genera dalla stessa variabile** che ha prodotto la tabella —
+> non si ribatte a mano. E prima di consegnare, la prosa si rilegge **contro** le tabelle.
+
+### G10 · La frase si genera dai numeri — `qclaim.py`
+**La guardia nata dal fallimento delle altre.** Cinque volte fra luglio e agosto 2026 una frase
+ha contraddetto una tabella stampata *due righe sopra*: `"11.71 resta sotto 8.37"` · `"salva il
+60-70%"` (misurato 25%) · `"3.50 è la media"` (era 3.013) · `"aggiornata la casella"` (grep
+diceva 0) · costo/range applicato a uno strumento binario. In ogni caso **il numero calcolato
+era giusto e la frase sbagliata**, e la smentita era già visibile nell'output.
+
+Le regole in prosa contro questo errore — R10, R11, G8, G9 — sono state violate **tutte** entro
+48 ore dall'essere scritte. Le guardie eseguibili dello stesso periodo hanno preso ogni bug. La
+differenza non è la qualità della regola: **una funzione scatta da sola, una frase no.**
+
+- `cmp_(a, b, la, lb)` — genera la frase di confronto **dai valori**: non può invertirsi.
+- `rel(v, op, soglia, label)` — verifica la soglia e la scrive; `raise_on_fail=True` per bloccare.
+- `verdict(metriche, criteri)` — **deriva** il verdetto dai criteri dichiarati a inizio lavoro,
+  invece di sceglierlo a fine analisi guardando i risultati.
+- `audit(testo, valori)` — scorre la bozza e marca ogni numero **non tracciabile** a una
+  quantità davvero calcolata: prende quelli ricordati o inventati.
+
+Da usare al passo 3 del checkpoint R5 (*ri-verifica delle affermazioni*), che è il passo che
+ricontrolla le frasi mentre il passo 2 ricontrolla il codice.
+
+
+---
+
 ## 1. THE ORDER OF OPERATIONS (never reorder)
 
 The sequence matters because each step can **kill the analysis**, and killing it early saves
 the rest. Most wrong conclusions come from doing step 4 before steps 1-3.
 
 ```
+0. GUARDIE       G1-G10 (§0b): la regola puo' sparare? il numero e' tuo? la frase e' GENERATA?
 1. RESTATE       what exactly is claimed, and what would falsify it
+1b. DECIDABILITY  is the horizon long enough for this Sharpe to reach t=2? (§1b — cheapest gate)
 2. MEASURABILITY can the available data even measure this? (§2 — the step everyone skips)
 3. VALIDATE      does the simulator reproduce reality where reality is known? (§3)
 4. MEASURE       run it, with costs, on the full sample (§4)
@@ -56,6 +166,8 @@ Load `references/` files as needed — **start with `routing-table.md`** (questi
   capacity, turnover drag, latency/fills
 - `07-montecarlo.md` — 45-49: permutation & sign-flip, surrogate paths, White's Reality Check,
   Hansen's SPA, moment stress
+- `08-microstructure-costs.md` — 50-59: spread estimation (Roll, Corwin-Schultz), the cost cliff,
+  slippage decomposition, Rademacher/RAS, half-life, cointegration, Kalman hedge ratio
 - `backtest-protocol.md` — the full checklist, bias by bias
 - `contrarian-protocol.md` — the attack playbook (run it, don't skim it)
 - `charts.md` — the required plots and what each one is for
@@ -75,12 +187,83 @@ Load `references/` files as needed — **start with `routing-table.md`** (questi
 - `scripts/qreport.py` — assembles the whole analysis into ONE self-contained HTML report
   (assumptions · measurability · metrics with SE · difference · overfitting · sizing · charts ·
   verdict · what the evidence does not support). Objective register, no persuasive language.
+- `scripts/qmicro.py` — **what it actually costs**, estimated from your own bars: Roll and
+  Corwin-Schultz spread estimators, `bounce_check` (is that short-horizon reversion just the
+  bid-ask bounce?), `cost_cliff` / `max_trade_frequency` (the frequency ceiling implied by a
+  target net Sharpe), `decompose_slippage` (entry slip vs exit slip vs commission).
+- `scripts/qpairs.py` — mean reversion & pairs: `ou_half_life` (compute it BEFORE the
+  backtest — it sets the trade count and therefore the cost hurdle), `hurst`, `adf_stat`,
+  `engle_granger` (with the correct, more severe EG critical values), `kalman_hedge_ratio`,
+  `pair_report`.
+- `scripts/qconfluence.py` — **conditional edges and confluence sizing** (§5b): `dose_response`
+  (monotone gradient across buckets, not a binary filter), `search_null` (what t your search
+  produces on shuffled data — the bar your real t must clear), `confluence_gate` (the five gates,
+  verdict derived not chosen; gate 2 replays your search through `build_score`, or takes
+  `preregistered=True`), `sizing_from_slope` + `sizing_cost` (weights from the fitted slope,
+  and what sizing costs you in Sharpe if the confluence is noise).
+- `scripts/qstats.py` also carries the **decidability gate** (§1b): `years_to_decide` (how many
+  years this Sharpe needs to reach t=2, with and without publication decay) and
+  `literature_queue` (sort published strategies by decidability — the stated Sharpe orders the
+  queue, it is never evidence).
+- `scripts/qregime.py` — **"no edge works forever"** (§5c): `window_scan` (strong windows vs a
+  BLOCK-shuffled null — picking the best window is itself a search), `regime_switch` (ex-ante
+  detector against always-on AND a random switch at equal duty cycle), `regime_report`,
+  `validate_power` (proves the test can fire before you trust a negative).
 - `scripts/qcharts.py` — stdlib-only, emits standalone **SVG** (no matplotlib):
   `equity_chart`, `drawdown_chart`, `contribution_chart`, `surface_chart(…, headroom=…)`,
   `dist_chart`, plus `sparkline()` for terminal output.
 
-All four scripts ship with `tests/test_all.py` — 163 assertions against independent references
-(published t-tables, known normal quantiles, closed forms) plus degenerate-input cases. Run it first.
+The scripts ship with `tests/test_all.py`, which checks them against independent references
+(published t-tables, known normal quantiles, closed forms) plus degenerate-input cases. It prints
+the passed and failed counts and exits 1 if any check fails. `qconfluence` and `qregime` import
+numpy, so their checks run only where numpy is installed and are listed as SKIP elsewhere.
+Run it first.
+
+---
+
+## 1b. DECIDABILITY GATE — is this answerable at all, before you write anything?
+
+**The cheapest gate in the file, and it runs before measurability.** From `t = Sharpe·√years`:
+
+```
+years_needed = (t_target / Sharpe)²        qstats.years_to_decide()
+```
+
+A Sharpe of 0.35 needs **31 years** to reach t=2. There is no cleverness that fixes this — not
+a better simulator, not more features, not a finer bar. If the horizon you have is shorter than
+`years_needed`, the backtest cannot decide the question and writing it produces a number with
+no inferential content.
+
+### Reading published strategies — the queue, not the answer
+
+Measured 2026-08-04 across 60 published strategies with stated Sharpe ratios
+(`paperswithbacktest/awesome-systematic-trading`, which ships both the numbers and runnable code):
+
+| | |
+|---|---|
+| median stated Sharpe | **0.359** → 31 years to t=2 |
+| already **negative** in the paper | 9 of 60 |
+| decidable in 20 years at the stated value | 22 of 60 |
+| decidable in 20 years **after publication decay** | **0 of 60** |
+
+Decay is not a guess: McLean & Pontiff (2016) measure ~58% of anomaly returns disappearing
+out-of-sample across 97 anomalies — roughly half statistical noise in the original sample, half
+genuine arbitrage after publication. `PUBLICATION_DECAY = 0.42` encodes the surviving fraction,
+and it is itself a **borrowed number** (G5): it comes from US equity anomalies, so restate or
+re-measure it when the strategy is of another kind.
+
+> **A published Sharpe orders your queue. It is never evidence.** It is the maximum of a search
+> you did not control, in a context you did not verify, filtered by a journal that does not
+> publish nulls. Use `qstats.literature_queue()` to sort candidates by decidability and work
+> down that order; never adopt the number itself as a premise (§9, G5).
+
+Calibration that puts the table in perspective: **ES buy-and-hold over 20 years reaches t = +2.46**
+— the most documented return in finance, barely clearing the bar. Anything claiming to beat it
+needs to clear a bar that the benchmark itself only just clears.
+
+For the rigorous version of this gate — correcting for skew, kurtosis and number of trials —
+use `qvalidate.min_track_record_length` and `qvalidate.deflated_sharpe`. `years_to_decide` is
+the one-line version, meant to stop work before it starts.
 
 ---
 
@@ -155,6 +338,9 @@ is invisible in the ratios and fatal in the sizing.
 ## 4. MEASURE — with costs, on everything
 
 - **Full sample, no cherry-picking of periods.** Report `n` (independent observations, not rows).
+- **Estimate the cost from your own bars first** (`qmicro`): Roll and Corwin-Schultz give a
+  spread from OHLC alone, and `bounce_check` tells you whether a measured short-horizon
+  reversion is anything more than the spread you would pay to chase it. Then:
 - **Costs from reality**, never assumed: fee per round-trip and slippage per exit type,
   measured from actual fills. Express them as a **fraction of the target**:
   `cost / target`. If a rule's target is 40pt and round-trip cost is 7pt, that's **18%** — a rule
@@ -220,6 +406,27 @@ If you searched `N` variants and picked the best, the winner's edge is inflated 
 
 > **Search headroom** = `σ_period · √n · √(2 ln N)`
 
+**What that quantity actually is, stated exactly** — because it is routinely used as if it
+were a 5% test, and it is not. `√(2 ln N)` is the leading term of the asymptotic for the
+max of N iid normals. It is **not** the mean of that max, and the significance level it
+corresponds to **drifts with N**:
+
+| N | 2 | 8 | 100 | 462 | 10 000 |
+|---|---|---|---|---|---|
+| `√(2 ln N)` | 1.18 | 2.04 | 3.04 | 3.50 | 4.29 |
+| level it really screens at | 22.5% | **15.4%** | 11.3% | 10.1% | 8.5% |
+
+So "beats the headroom" is a **weak screen**, not significance. For a stated level use
+`qstats.search_threshold(N, alpha)` — exact, solving `1 − Φ(t)^N = α`:
+`search_threshold(8) = 2.49` vs `√(2 ln 8) = 2.04`; `search_threshold(462) = 3.69` vs `3.50`.
+
+**And the correction cuts both ways, so it is measured and not assumed.** Those thresholds
+assume the N tries are *independent*. Real grids are correlated, so effective N is smaller
+and the true threshold is **lower** — with mean ρ 0.3 across 462 alphas the effective
+breadth collapses to ~3.3 and the 5% threshold falls to ~2.16. Use
+`qportfolio.effective_breadth`; note it also **refuses** to call the number breadth when
+ρ ≤ 0, and reports the cancellation signature instead.
+
 Any result **below** the headroom is indistinguishable from luck. Report it:
 > "Best of 60 variants, headroom ≈ ±2400pt; the winner beat baseline by 785pt → inside the noise."
 
@@ -240,6 +447,153 @@ on the **full** sample, and never select one using a window chosen because the b
 
 ---
 
+## 5b. CONDITIONAL EDGES — "it works better when X", and sizing up on it
+
+**Fires whenever anyone proposes filtering or sizing a strategy by context**: confluences,
+regime filters, "only trade when volatility is high", "size 3x on A+ setups", signal stacking.
+This is the most common way a losing strategy is made to look profitable, and the failure is
+invisible from the inside — the procedure returns a confident positive when nothing is there.
+
+### The number that reframes everything
+
+Searching for the best filter **manufactures** significance. Measured on a real case
+(2026-08-03, mean-reversion on 16y NQ, 22 context variables, all singles and pairs = 968 rules):
+
+| | t |
+|---|---|
+| best rule, real P&L | **+3.38** |
+| best rule, **shuffled** P&L (median of 200) | **+3.02** |
+| 95th percentile under the null | **+3.97** |
+
+The discovery sat inside its own noise band. Frozen and applied to gold: **t = +0.15**, and the
+second rule flipped sign to **−0.86**. Nothing was there.
+
+> **A searched filter's t is uninterpretable until compared to the t the SAME SEARCH produces
+> on data with no edge.** Not against 2.0. Against its own null.
+
+Rough guide before you even run it: searching `N` rules puts the expected best-of-N near
+`√(2 ln N)` σ — 968 rules ⇒ ~3.7σ, 7 200 rules ⇒ ~4.2σ. **Adding more candidate variables
+raises the bar faster than it raises your chance of clearing it.** Prefer few pre-registered
+hypotheses with an economic mechanism over a wide automatic sweep.
+
+### The five gates — `scripts/qconfluence.py`, `confluence_gate()`
+
+1. **Dose-response, not a binary filter.** Score each period by how many conditions align, and
+   require the mean P&L to rise **monotonically** across buckets. A top-tercile-vs-rest split is
+   the weakest possible evidence and the easiest for noise to fake; an ordered gradient is much
+   harder. It is also the only shape that answers the sizing question — you need the **slope**,
+   not one bucket's mean.
+2. **Null calibration of the search** — shuffle the P&L, re-run the *entire* search, compare
+   against what that produces. `confluence_gate` does it literally: pass
+   `build_score(masks, pnl) -> score`, the function that built your score, with **every** step
+   that looked at the P&L inside it (a shortlist frozen outside it is not replayed, and noise
+   then passes about 69% of the time). Gate 2 shuffles the P&L in blocks of 25 periods
+   (`block`), rebuilds the score on copies, recomputes the same HC3-studentised slope t and
+   passes on the two-sided permutation p-value ≤ 0.05; shuffles on which the search finds
+   nothing stay out of the null. A score fixed before looking at this P&L takes
+   `preregistered=True` instead. With neither, gate 2 is not run: the masks alone cannot say
+   how a score was built from them. Measured on 200 datasets per shape, noise passes it
+   between 3% and 8% of the time whatever the base mean, the rules' coverage, a two-valued
+   P&L or a variance that grows with the score. **Make `block` cover the P&L's memory**:
+   60-period overlapping forward returns pass noise 34 times in 200 with blocks of 25 and 12
+   with blocks of 100. **A trend that score and P&L share still passes it** (188 of 200): no
+   shuffle can tell a shared trend from an edge, so gates 3 and 4 have to. A heavy-tailed
+   score (lognormal) let noise pass 82 times in 1000; its ranks, 44. `search_null` remains as
+   a standalone tool; it tests each rule's mean P&L against zero, so centre the P&L before
+   using it on its own.
+3. **Out-of-sample** — select on the first part, apply frozen to the rest. No re-tuning.
+4. **Independent replication** — same frozen rule, different instrument. In the measured case
+   this is the gate that killed it, after gates 1-3 all passed.
+5. **Concentration** — jackknife the bucket the sizing would weight **up**: the top scores when
+   the slope rises, the bottom ones when it falls. It must make money, keep its sign on every
+   deletion and not owe half its total to three periods: an effect living in three periods is
+   a story about three periods. It does not see a slope that a few periods make in the
+   *other* bucket (three crash days in the down-weighted bucket: UTILIZZABILE 33 times in 100,
+   measured by an independent review); jackknifing the slope itself is the open fix.
+
+A gate **not executed** is not a gate passed: `confluence_gate` returns NON DECIDIBILE, never a
+positive, when replication is missing, or when gate 2 has neither `build_score` nor
+`preregistered=True`.
+
+### If all five pass, then sizing — and only then
+
+- Weights come from the **fitted slope**, capped (`sizing_from_slope`). Never from ratios of
+  bucket means: those are unbounded and blow up exactly where the estimate is least reliable.
+- Price the downside first with `sizing_cost(w) = mean(w)/√(mean(w²))` — the Sharpe multiplier
+  **if the confluence is pure noise**. Measured on the real case: 1x/3x costs **13%** of Sharpe,
+  0.5x/2x costs **19%**, 1x/5x costs **23%**. That is the premium paid for being wrong, and it
+  is why the gates come first.
+
+### Validate the validator
+
+`qconfluence` ships with a **positive control**: inject a known effect and confirm the gates
+pass it. This caught a real defect — `dose_response` used quantile edges, which on a discrete
+confluence count (0-3) produce duplicate edges, empty buckets and `nan` means, so gate 1 failed
+**even on a true injected effect**. A gate that rejects the true positive is not a strict gate,
+it is a broken one. Always run both directions.
+
+*(Recurring implementation trap, hit three times in one session: in NumPy `bool + bool` is
+logical OR, not a count. `sum(mask_a + mask_b + mask_c)` silently yields 0/1 instead of 0-3,
+collapsing the dose-response to two buckets. Cast with `.astype(int)` / `int(...)` first.)*
+
+---
+
+## 5c. "NO EDGE WORKS FOREVER" — the objection, made testable
+
+**Fires whenever a full-sample negative is explained away by regime change**, or whenever
+rotation between strategies is proposed. The objection is serious and usually right in spirit;
+the inference drawn from it usually is not.
+
+**Where it is right:** `t = Sharpe·√years` assumes stationarity, and edge decay is real
+(McLean & Pontiff: ~58% of anomaly returns vanish post-publication). Averaging over 16 years
+dilutes an edge alive for 4 of them.
+
+**Where the argument breaks:** dilution lowers `t`; **it does not flip the sign**. 4 good years
++ 12 flat = a positive mean with a low t. A *negative* full-sample result needs years where the
+strategy **loses**, not years where it stops working. So the objection makes three falsifiable
+predictions — `scripts/qregime.py`, `regime_report()`:
+
+| | prediction | function |
+|---|---|---|
+| **P1** | strong contiguous windows exist | `window_scan` |
+| **P2** | **more** of them than chance gives | `window_scan` vs block null |
+| **P3** | the regime is identifiable **in advance** | `regime_switch` |
+
+**P2 is not optional.** Picking "the best window" is a search: 16 years scanned with 2-year
+windows gives ~14 overlapping positions, and the max of 14 correlated windows beats the mean by
+1.5-2σ with no edge at all. The null must be **block**-shuffled — an iid shuffle preserves
+nothing and makes every series look regimed.
+
+**P3 needs two baselines, not one.** A switch that is merely flat part of the time changes the
+mean without skill. `regime_switch` always reports against always-on **and** a random switch at
+the same duty cycle. Beating always-on but not random means the merit is in being out of the
+market, not in the timing. (Observed in the built-in null control: `beats_always=True`,
+`beats_random=False`.)
+
+Measured, 2026-08-03, mean-reversion on 16y NQ: best 2-year window `t = +0.06`, `p = 0.983` —
+98% of *shuffled* series produce a better best-window, and the trailing switch made it worse
+(−128 → −333), worse than random too. Verdict: **never an edge**, not a diluted one.
+
+`validate_power()` builds a synthetic edge confined to a quarter of the sample and confirms the
+test fires on it (`p = 0.000`, switch beats both baselines). **Run it before trusting a
+negative** — a regime test that cannot detect a regime-limited edge says nothing.
+
+### And the practical consequence
+
+Rotation does not lower the evidence bar — it raises it, because you must now also prove the
+detector works ex ante. Where you cannot buy **years**, buy **breadth and frequency**:
+
+```
+t  = Sharpe × √years      ← time cannot be bought
+IR = IC × √breadth        ← breadth can
+```
+
+A tiny edge over 200 instruments and 50 trades a day is decidable in months; the same edge on
+one pair and one trade a day is never decidable. When a strategy is undecidable, the productive
+move is usually to change the **source of observations**, not to weaken the standard.
+
+---
+
 ## 6. CONTRARIAN PASS — mandate: destroy the finding
 
 Run `references/contrarian-protocol.md` in full. Spawn an independent adversarial agent for
@@ -254,6 +608,12 @@ Non-negotiable attacks (details in the protocol):
 5. **Regime** — one regime = one observation. Which regime is missing (trend, crash, chop, high-rate)?
 6. **Executability** — poll rate, trigger basis (mark vs last), min size, margin, borrow.
 7. **Costs** — measured or assumed? adverse selection? funding on longer holds?
+7b. **Fillability** — `qmicro.unfillable_share`. For any entry AT A LEVEL (breakout, stop,
+   limit, a touch of a prior high/low): was the price already past it when the window opened?
+   A London-range breakout showed t=+4.72 / +13.11 across two instruments, 16/17 positive
+   years, jackknife 20/20 — and 36-44% of its "trades" were unfillable gap opens carrying
+   **106% and 96%** of the profit. Real intraday breakouts: t −0.35 and +0.69. **No amount of
+   statistical rigour catches a wrong fill assumption.**
 8. **The missing number** — is the headline metric of the *recommended* variant actually reported,
    or was a different variant's number quoted? (This one catches real mistakes: always print the
    full metric set for the exact configuration being recommended.)
@@ -299,6 +659,21 @@ Close with the standard status line: **done · next · open risks**.
 recommend positions to third parties, and backtested figures are hypothetical (see README disclaimer).
 
 ---
+
+## 8b. COST IS A MEASUREMENT, NOT AN ASSUMPTION
+
+An unverified cost model silently decides verdicts, and it is the assumption most likely to
+be wrong by an order of magnitude. Before publishing any *net* figure:
+
+1. Estimate the spread from the data (`qmicro.roll_spread`, `qmicro.corwin_schultz_spread`).
+2. If short-horizon reversion is part of the thesis, run `qmicro.bounce_check`.
+3. Express cost as a **fraction of the target**, and compute the frequency ceiling
+   (`qmicro.max_trade_frequency`).
+4. The first time realised P&L disagrees with the simulator, run
+   `qmicro.decompose_slippage` — entry slip, exit slip and commission have three different
+   fixes, and conflating them wastes months.
+5. Any cost number not measured from real fills stays marked `⚠ assumed` in the output, and
+   every conclusion that depends on it is stress-tested at 2×.
 
 ## 9. HOUSE RULES (adapt to your project)
 
