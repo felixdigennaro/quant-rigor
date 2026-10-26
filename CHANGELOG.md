@@ -1,5 +1,60 @@
 # Changelog
 
+## v2.1.0, il cancello 5 fa il jackknife anche della pendenza (2026-10-26)
+
+Il cancello 5 guardava solo il bucket che il dimensionamento pesa di più. Tre crolli nel bucket
+che pesa di meno facevano la pendenza mentre il bucket pesato di più sembrava pulito, e il
+verdetto arrivava a UTILIZZABILE 63 volte su 200 (65 col punteggio rovesciato). Un effetto che
+viveva tutto in una finestra di 100 periodi passava il cancello 5 180 volte su 200.
+
+Felice ha scelto fra quattro progetti misurati. Ora il cancello 5 passa solo se passano due
+prove:
+- quella di prima sul bucket pesato di più, invariata;
+- una nuova sulla pendenza, nella funzione pubblica `jackknife_slope`. I 3 periodi che spingono
+  di più la pendenza devono portarne meno di metà del numeratore, e togliere uno qualsiasi di
+  20 blocchi contigui nel tempo deve lasciare una pendenza dello stesso segno e almeno metà di
+  quella intera.
+
+Con meno di 60 periodi finiti, o con un numeratore nullo a meno degli arrotondamenti, il
+cancello 5 non gira: prima un P&L costante o perfettamente simmetrico lo passava.
+`res["concentration"]` aggiunge `slope_top3_share`, `slope_block_min_ratio` e `slope_blocks`.
+È una versione minore perché il cancello ora fa quello che §5b ha sempre detto, un effetto che
+vive in tre periodi è una storia su tre periodi, e aggiunge una funzione pubblica. Un verdetto
+cambia da UTILIZZABILE solo dove la pendenza è concentrata.
+
+### Misurato
+Il `confluence_gate` vero delle due versioni, 200 serie per riga.
+
+| forma | cancello 5 prima / dopo | UTILIZZABILE prima / dopo |
+|---|---|---|
+| tre crolli nel bucket pesato di meno, pendenza che sale | 198 / 0 | 63 / 0 |
+| lo stesso col punteggio rovesciato | 198 / 0 | 65 / 0 |
+| i guadagni del bucket pesato di più in 3 periodi | 0 / 0 | 0 / 0 |
+| tutto l'effetto in una finestra di 100 periodi | 180 / 2 | 13 / 0 |
+| sette forme pulite (rumore normale su e giù, t(3), t(2.5), varianza che cresce, P&L a due valori, serie persistenti) | 191-200 / 191-200 | invariati: 74, 78, 137, 115, 127, 90, 166 |
+
+### Limiti che restano (misure della revisione indipendente)
+- **Una concentrazione più larga di tre giorni.** La stessa perdita di 180 divisa su 4 giorni
+  porta il verdetto a UTILIZZABILE 12 volte su 200, su 5 giorni 57, su 6 71, su 8 74 (prima 69,
+  72, 73 e 74). Guadagni senza effetto concentrati in 6-8 giorni del bucket pesato di più
+  passano come prima (fra 22 e 31 su 200).
+- **Un effetto su due blocchi o più.** In una finestra di 150 periodi il verdetto scende da 23 a
+  10 su 200, in una di 200 da 18 a 17, da 250 periodi in su non cambia; in due finestre di 100
+  da 19 a 17.
+- **Il costo sugli effetti veri.** Su 45 famiglie di dati puliti (punteggi persistenti, rari,
+  periodici, code pesanti, P&L a due valori, campioni lunghi e corti) i verdetti UTILIZZABILE
+  passano da 5470 a 5464: sei casi in cui 3 periodi o un blocco portano davvero metà della
+  pendenza.
+
+### Check
+La suite passa da 471 a 498 check. Delle 41 mutazioni del test sulla pendenza resta verde solo
+quella equivalente al codice: togliere la media del P&L di tutto il campione invece di quella
+dei periodi tenuti non cambia nulla, perché il punteggio centrato somma a zero. Delle 6
+mutazioni che la revisione aveva trovato verdi, 5 ora sono rosse; la sesta scambia l'ordine di
+due note di cancello non eseguito e non cambia nessun verdetto. Sono rosse anche le mutazioni
+delle due guardie nuove, lo zero relativo e blocks almeno 2, e le 48 del cancello 2 restano
+tutte rosse.
+
 ## v2.0.0, i cancelli 2 e 5 rifatti (2026-10-25)
 
 **Cambi che rompono.**
