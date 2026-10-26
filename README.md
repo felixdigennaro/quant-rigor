@@ -57,7 +57,7 @@ python3 scripts/qdata.py --symbol NQ=F
 
 | Path | What it is |
 |---|---|
-| `SKILL.md` | the workflow: 8 steps, in a fixed order, plus when it fires |
+| `SKILL.md` | the workflow: the guards against silent failure, then 8 steps in a fixed order, plus when it fires; it also explains formulas 60-67, 69 and 70 |
 | `references/01-probability.md` | formulas 1-8 — inference, what a sample can support |
 | `references/02-linear-algebra.md` | 9-15 — portfolios, risk decomposition, optimisation |
 | `references/03-stochastic.md` | 16-22 — price dynamics; §21 is the resolution limit |
@@ -65,25 +65,33 @@ python3 scripts/qdata.py --symbol NQ=F
 | `references/05-validation.md` | 31-37 — walk-forward, purged CV, DSR, PBO, HAC, MinTRL, FDR |
 | `references/06-sizing-execution.md` | 38-44 — Kelly, drawdown sizing, impact, capacity, fills |
 | `references/07-montecarlo.md` | 45-49 — permutation, surrogate paths, Reality Check, SPA, moment stress |
+| `references/08-microstructure-costs.md` | 50-59 and 68: spread from your own bars, bounce check, cost cliff, slippage, mean reversion and pairs, RAS |
 | `references/routing-table.md` | **which formula answers which question** — start here |
 | `references/backtest-protocol.md` | the checklist, bias by bias |
 | `references/contrarian-protocol.md` | 8 attacks whose mandate is to refute |
 | `references/charts.md` | the five plots and what each one exposes |
 | `references/worked-example.md` | a full case, end to end, with the four traps it catches |
-| `scripts/qstats.py` | SE, t, bootstrap, jackknife, headroom, required n, measurability |
-| `scripts/qvalidate.py` | HAC, Deflated Sharpe, PBO, purged K-fold, MinTRL, BH-FDR |
+| `scripts/qstats.py` | SE, t, bootstrap, jackknife, headroom, required n, measurability; reachable threshold, event rate and log to simple (60-62); years to decide (69) |
+| `scripts/qvalidate.py` | HAC, Deflated Sharpe, PBO, purged K-fold, MinTRL, BH-FDR; RAS for correlated searches (68) |
 | `scripts/qsize.py` | Kelly, drawdown-constrained f, vol targeting, impact, capacity |
-| `scripts/qportfolio.py` | covariance, eigen/PCA, risk contributions, risk parity, shrinkage, caps |
+| `scripts/qportfolio.py` | covariance, eigen/PCA, risk contributions, risk parity, shrinkage, caps; effective breadth and the sign check before diversifying (64) |
 | `scripts/qcharts.py` | five charts as standalone SVG |
 | `scripts/qmontecarlo.py` | permutation, sign-flip, surrogate paths, White RC, Hansen SPA, moment stress |
+| `scripts/qmicro.py` | spread from your own bars, bounce check, cost cliff, slippage decomposition (50-54); plausibility and borrowed-number guards (63); fillability of entries at a level (70) |
+| `scripts/qpairs.py` | half-life, Hurst, ADF, Engle-Granger, Kalman hedge ratio, one-call pair report (55-59) |
+| `scripts/qclaim.py` | comparisons, thresholds and verdicts generated from the numbers, and an audit of untraceable numbers in a draft (65-67) |
+| `scripts/qconfluence.py` | conditional edges and confluence sizing: dose-response, the five gates, slope jackknife (SKILL.md §5b; needs numpy) |
+| `scripts/qregime.py` | "no edge works forever": strong windows against a block-shuffled null, regime switch, power check (SKILL.md §5c; needs numpy) |
 | `scripts/qdata.py` | the only networked module: public price history + your own CSV files |
 | `scripts/qreport.py` | assembles everything into one self-contained HTML report |
 | `tests/test_all.py` | assertions vs **independent** references; prints the passed and failed counts, exits 1 if any fails |
 | `examples/demo_strategy.py` | runnable end-to-end demo (single strategy) |
 | `examples/demo_portfolio.py` | runnable demo (multi-sleeve book, formulas 9-15) |
 
-Every formula entry has the same four parts: the formula, **how it's used**, **how it lies**, and
-the concrete action. The third part is the one you're paying for.
+Formulas 1-49 each have the same four parts: the formula, **how it's used**, **how it lies**, and
+the concrete action. The third part is the one you're paying for. Formulas 50-59 and 68 are
+explained in `08-microstructure-costs.md`, and 60-67, 69 and 70 in SKILL.md; `routing-table.md`
+says where each one is.
 
 ---
 
