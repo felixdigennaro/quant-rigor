@@ -1,4 +1,4 @@
-# Microstructure, costs and mean reversion — formulas 50-59
+# Microstructure, costs and mean reversion — formulas 50-59 and 68
 
 Added in v1.4 after studying four public repositories. This file states **what was taken,
 from where, and what it is for** — provenance matters, because a formula whose origin you
@@ -101,7 +101,7 @@ is more urgent than the size of the gap.
 
 ---
 
-## 5. Rademacher Anti-Serum (38, in `qvalidate.py`)
+## 5. Rademacher Anti-Serum (68, in `qvalidate.py`)
 
 `rademacher_complexity`, `massart_bound`, `effective_trials`, `ras_sharpe_adjustment`.
 

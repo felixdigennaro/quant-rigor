@@ -4,7 +4,8 @@
 The tools that separate a backtest from a discovery: walk-forward and purged CV splits,
 Deflated Sharpe, PBO, HAC/Newey-West errors, minimum track record length, FDR control.
 
-Reference notes: references/05-validation.md (formulas 31-37).
+Reference notes: references/05-validation.md (formulas 31-37); RAS, formula 68, in
+references/08-microstructure-costs.md.
 
     import sys; sys.path.insert(0,'<skill>/scripts')
     from qvalidate import deflated_sharpe, pbo, newey_west_se, purged_kfold_splits
@@ -312,7 +313,7 @@ def report(returns, n_trials=1, sd_of_trial_sharpes=None, label="strategy"):
     return "\n".join(L)
 
 
-# ---------------------------------------------------------------- 38. Rademacher / RAS
+# ---------------------------------------------------------------- 68. Rademacher / RAS
 # Added after studying stefan-jansen/machine-learning-for-trading ch.16 §16.7.
 # Reference: Paleologo, "Elements of Quantitative Investing" (2024) ch.8;
 #            Mohri, Rostamizadeh & Talwalkar, "Foundations of Machine Learning" (2018).
