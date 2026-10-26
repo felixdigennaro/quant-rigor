@@ -132,7 +132,7 @@ def corwin_schultz_median(highs, lows, window=1):
     return vals[len(vals) // 2]
 
 
-# ---------------------------------------------------------------- 52. is the reversion real?
+# ---------------------------------------------------------------- 63. plausibilità e numeri presi in prestito
 
 
 def plausibility_flag(spread_rel, mid_price, tick_size, max_ticks=20.0,
@@ -270,6 +270,9 @@ def borrowed_parameter(name, value, source, f, lo, hi, measured=None):
     return out
 
 
+# ---------------------------------------------------------------- 52. is the reversion real?
+
+
 def bounce_check(closes, highs, lows, tick_size, mid_price=None):
     """Is measured short-horizon mean reversion a signal, or is it the bid-ask bounce?
 
@@ -345,9 +348,20 @@ def max_trade_frequency(gross_sharpe, target_net_sharpe, cost_per_trade, sd_per_
     Solves for the largest trades_per_year at which net Sharpe still reaches the target.
     Use it BEFORE building an intraday system: if the ceiling is below the frequency your
     idea requires, the idea is dead on arrival and no backtest is needed.
+
+    With a positive cost, net Sharpe falls as trades are added, so a gross Sharpe at or below
+    the target returns 0.0: no frequency reaches it (until 2.1.2 this returned inf). With zero
+    cost the answer is inf if the gross Sharpe reaches the target and 0.0 if it does not. With
+    a rebate (cost < 0) the ceiling is inf, but a gross Sharpe below the target then needs a
+    FLOOR of ((target - gross) * sd / |cost|)^2 trades a year, which this function does not
+    return: an idea that trades less than that misses the target.
     """
-    if gross_sharpe <= target_net_sharpe or cost_per_trade <= 0:
+    if sd_per_trade <= 0:
+        raise ValueError("sd_per_trade must be positive")
+    if cost_per_trade < 0 or (cost_per_trade == 0 and gross_sharpe >= target_net_sharpe):
         return float("inf")
+    if gross_sharpe <= target_net_sharpe:
+        return 0.0
     n = ((gross_sharpe - target_net_sharpe) * sd_per_trade / cost_per_trade) ** 2
     return n
 
@@ -374,6 +388,11 @@ def decompose_slippage(theoretical_entry, actual_entry, theoretical_exit, actual
       - exit slippage    -> same, plus whether the exit is a scheduled or a momentum exit
       - commission       -> broker/venue, or size per trade
     Confusing them wastes months. side is +1 for long, -1 for short.
+
+    Entry slippage, exit slippage and commission are defined so that they add up to the whole
+    gap, so unexplained_residual is zero up to rounding by construction. It cannot tell you
+    the model of the trade is wrong; for that, compare realised_pnl with the P&L on the
+    account statement.
     """
     s = 1.0 if side >= 0 else -1.0
     theo = s * (theoretical_exit - theoretical_entry) * multiplier
@@ -433,7 +452,7 @@ if __name__ == "__main__":
     lo = [min(a, b) - 0.01 for a, b in zip(obs, obs[1:])]
     print(report(obs[:-1], hi, lo, tick_size=0.02, label="synthetic (true spread 0.02)")["text"])
 
-# ---------------------------------------------------------------- 60. operabilità dell'ingresso
+# ---------------------------------------------------------------- 70. operabilità dell'ingresso
 
 
 def unfillable_share(level, open_px, side, pnl=None):

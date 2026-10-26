@@ -230,7 +230,7 @@ Run it first.
 years_needed = (t_target / Sharpe)²        qstats.years_to_decide()
 ```
 
-A Sharpe of 0.35 needs **31 years** to reach t=2. There is no cleverness that fixes this — not
+A Sharpe of 0.359 needs **31 years** to reach t=2. There is no cleverness that fixes this — not
 a better simulator, not more features, not a finer bar. If the horizon you have is shorter than
 `years_needed`, the backtest cannot decide the question and writing it produces a number with
 no inferential content.

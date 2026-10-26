@@ -31,7 +31,7 @@ a measurement. Use it before quoting any net figure.
 
 ---
 
-## 2. Spread estimation (50-51)
+## 2. Spread estimation (50-52)
 
 ### Roll (1984) — `qmicro.roll_spread`
 With trades alternating bid/ask, consecutive price changes have covariance `-(s/2)²`, so
@@ -58,7 +58,7 @@ S     = 2(e^α − 1)/(1 + e^α)
 **Prefer it on OHLC bars**: it does not break on trending data. Report *both* — when the two
 disagree materially, that disagreement is information about the data, not a nuisance.
 
-### `qmicro.bounce_check` — the test that settles short-horizon reversion
+### `qmicro.bounce_check` (52) — the test that settles short-horizon reversion
 Measured negative autocorrelation at 1-5 minutes is nearly always the bid-ask bounce. The
 test: estimate the implied spread from the same data and compare it to the real tick.
 
@@ -77,7 +77,9 @@ and it costs one function call.
 Per-trade friction is fixed while the predictable component shrinks with horizon, so the
 **same alpha** is valuable daily and worthless intraday. `max_trade_frequency` inverts the
 relation: given a gross Sharpe, a cost and a target net Sharpe, it returns the highest
-trade frequency that still clears the target.
+trade frequency that still clears the target, and 0 when a positive cost leaves none. With a
+rebate (negative cost) the ceiling is infinite, but a gross Sharpe below the target then needs
+a minimum frequency, which the function does not return.
 
 **Run it before building an intraday system.** If the ceiling is below the frequency your
 idea needs, the idea is dead and no backtest is required.
@@ -90,14 +92,16 @@ strategy is an execution problem wearing a strategy costume.
 ## 4. Where did the money go (54)
 
 `qmicro.decompose_slippage` splits the gap between theoretical and realised P&L into
-**entry slippage · exit slippage · commission · unexplained residual**.
+**entry slippage · exit slippage · commission**.
 
 The three components have three different fixes — order type, exit design, venue — and
 confusing them wastes months. Run this the *first* time realised P&L disagrees with the
 simulator, not the tenth.
 
-The residual must close to zero. If it does not, the model of the trade is wrong, and that
-is more urgent than the size of the gap.
+The three components add up to the whole gap by construction, so `unexplained_residual` is
+zero up to rounding and says nothing about the trade. The check that matters happens outside
+the function. Compare `realised_pnl` with the P&L on the account statement; if they differ,
+the model of the trade is wrong, and that is more urgent than the size of the gap.
 
 ---
 

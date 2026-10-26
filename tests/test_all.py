@@ -601,6 +601,19 @@ ok("cost_cliff netto < lordo", _cc["net_sharpe"] < _cc["gross_sharpe"])
 close("cost_cliff costo zero => netto == lordo", M.cost_cliff(2.0, 1000, 0.0, 10.0)["net_sharpe"], 2.0, 1e-9)
 _f = M.max_trade_frequency(2.0, 1.0, 1.0, 10.0)
 close("max_trade_frequency inverte cost_cliff", M.cost_cliff(2.0, _f, 1.0, 10.0)["net_sharpe"], 1.0, 1e-6)
+ok("max_trade_frequency: lordo sotto l'obiettivo => nessuna frequenza", M.max_trade_frequency(0.5, 1.0, 0.01, 0.1) == 0.0)
+ok("max_trade_frequency: lordo pari all'obiettivo, costo > 0 => nessuna frequenza", M.max_trade_frequency(1.0, 1.0, 0.01, 0.1) == 0.0)
+ok("max_trade_frequency: costo zero, lordo sotto => nessuna frequenza", M.max_trade_frequency(0.5, 1.0, 0.0, 10.0) == 0.0)
+ok("max_trade_frequency: costo zero, lordo sopra => nessun tetto", M.max_trade_frequency(2.0, 1.0, 0.0, 10.0) == float("inf"))
+ok("max_trade_frequency: costo zero, lordo pari => nessun tetto", M.max_trade_frequency(1.0, 1.0, 0.0, 10.0) == float("inf"))
+ok("max_trade_frequency: rimborso, lordo sopra => nessun tetto", M.max_trade_frequency(2.0, 1.0, -1.0, 10.0) == float("inf"))
+ok("max_trade_frequency: rimborso, lordo sotto => tetto infinito (il limite e' un minimo)", M.max_trade_frequency(0.5, 1.0, -1.0, 10.0) == float("inf"))
+try:
+    M.max_trade_frequency(2.0, 1.0, 1.0, 0.0)
+    _mtf_err = None
+except Exception as e:  # a wrong exception type is a FAIL, not a crash
+    _mtf_err = e
+ok("max_trade_frequency rifiuta sd_per_trade <= 0", isinstance(_mtf_err, ValueError), repr(_mtf_err))
 close("required_edge_per_trade al 20%", M.required_edge_per_trade(1.0, 0.20), 5.0, 1e-9)
 ok("cost_cliff segnala il non-sopravvissuto", not M.cost_cliff(0.5, 5000, 2.0, 10.0)["survives"])
 
