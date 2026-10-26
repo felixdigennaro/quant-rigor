@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.1.3, il README arriva alla formula 70 (2026-10-26)
+
+La tabella «What's inside» del README si fermava al file 07 (formule 45-49), e non elencava
+`references/08-microstructure-costs.md` né i moduli `qmicro`, `qpairs`, `qclaim`, `qconfluence`
+e `qregime`. Ora li elenca con i numeri delle formule che contengono, e le righe di `qstats`,
+`qvalidate` e `qportfolio` citano anche le loro formule oltre la 49 (60-62 e 69, 68, 64). La
+riga di SKILL.md dice che lì sono spiegate le formule 60-67, 69 e 70.
+
+Il README diceva anche che ogni formula ha le stesse quattro parti: la formula, come si usa,
+come mente e l'azione. È vero per le formule 1-49, dove ogni titolo ha le sue quattro voci; il
+file 08 e SKILL.md usano un altro formato. Ora il README lo dice e rimanda a
+`routing-table.md`.
+
+Corretto anche un conteggio in due punti. L'elenco dei passi in SKILL.md e la checklist di
+`references/backtest-protocol.md` parlavano di quattro grafici, ma §7 ne richiede cinque, come
+`charts.md` e `qcharts.py`.
+
+Il codice eseguito non cambia.
+
 ## v2.1.2, la tabella di instradamento arriva alla 70, e le formule 50-70 hanno un numero solo (2026-10-26)
 
 `references/routing-table.md`, da cui SKILL.md dice di partire, non portava a nessuna formula

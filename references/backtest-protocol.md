@@ -98,7 +98,7 @@ than none.
 
 - [ ] Full metric set for baseline and each variant: total, per-period mean ± SE, `t`, win%,
       max DD, time-under-water, worst period, skew, cost ratio, `n`.
-- [ ] The four required charts (`charts.md`).
+- [ ] The five required charts (`charts.md`).
 - [ ] Explicit verdict: decidable-positive / decidable-negative / **not decidable** + path to decide.
 - [ ] Default action stated: **change nothing** unless decidable-positive.
 - [ ] Limitations section listing every unchecked box above.

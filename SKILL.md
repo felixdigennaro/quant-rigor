@@ -151,7 +151,7 @@ the rest. Most wrong conclusions come from doing step 4 before steps 1-3.
 4. MEASURE       run it, with costs, on the full sample (§4)
 5. UNCERTAINTY   band not point: SE, t, bootstrap, jackknife (§5)
 6. CONTRARIAN    adversarial pass whose mandate is to destroy the finding (§6)
-7. CHARTS        the four plots that expose what the table hides (§7)
+7. CHARTS        the five plots that expose what the table hides (§7)
 8. VERDICT       decidable / not decidable, and what would make it decidable (§8)
 ```
 
