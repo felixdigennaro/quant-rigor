@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.1.1, RAS prende il numero 68 e la descrizione non conta più le formule (2026-10-26)
+
+Il numero 38 indicava due formule. In `references/06-sizing-execution.md` la 38 è Kelly. RAS,
+aggiunto con la v1.4, portava anch'esso il 38 nel titolo della sua sezione in
+`references/08-microstructure-costs.md`, nel commento di sezione di `scripts/qvalidate.py` e
+nella voce v1.4 qui sotto, mentre l'indice dei riferimenti in SKILL.md lo metteva fra le 50-59.
+Le etichette nominavano 68 formule con 67 numeri.
+
+- RAS è la formula 68: nel titolo e nella sezione 5 di `references/08-microstructure-costs.md`,
+  nell'indice dei riferimenti in SKILL.md, nel commento di sezione e nel docstring di
+  `scripts/qvalidate.py`. La voce v1.4 resta com'era, perché racconta cosa diceva allora.
+- La descrizione in SKILL.md non dice più quante formule applica. Era un numero scritto a mano
+  accanto a una quantità che cresce, e si era già staccato una volta. Nella 1.3.0 diceva 44,
+  mentre le formule numerate erano 49. Con RAS sarebbe diventato 68.
+- `.claude-plugin/plugin.json` dice 2.1.1. Con la PR #7, unita senza una voce qui, era già
+  passato dalla 1.3.0 alla 2.1.0 e aveva perso «49 formulas» e «Zero dependencies»
+  (qconfluence e qregime importano numpy).
+
+Il codice eseguito non cambia. Cambiano solo documenti, un commento, un docstring e il
+manifesto.
+
 ## v2.1.0, il cancello 5 fa il jackknife anche della pendenza (2026-10-26)
 
 Il cancello 5 guardava solo il bucket che il dimensionamento pesa di più. Tre crolli nel bucket

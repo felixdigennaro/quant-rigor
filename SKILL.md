@@ -1,6 +1,6 @@
 ---
 name: quant-rigor
-description: Rigorous quantitative analysis of any trading or investment strategy — existing, proposed, or under evaluation. Applies 67 quant formulas (probability, linear algebra, stochastic calculus, pricing/risk, validation, sizing/execution, microstructure/costs, mean reversion, guards against silent failure) as working tools rather than decoration, each with its failure mode. Runs a measurability gate before any backtest, validates the simulator against reality, quantifies uncertainty (SE, t, bootstrap, jackknife, best-of-N headroom, Deflated Sharpe, RAS/Rademacher for correlated searches, PBO, HAC), estimates transaction costs from your own bars instead of assuming them, refuses to deliver a verdict that hinges on a number it has not measured itself, runs an adversarial contrarian pass, and produces the charts that expose what tables hide. Use whenever a strategy, edge, backtest result, parameter change, sizing decision, or performance claim is on the table.
+description: Rigorous quantitative analysis of any trading or investment strategy — existing, proposed, or under evaluation. Applies quant formulas (probability, linear algebra, stochastic calculus, pricing/risk, validation, sizing/execution, microstructure/costs, mean reversion, guards against silent failure) as working tools rather than decoration, each with its failure mode. Runs a measurability gate before any backtest, validates the simulator against reality, quantifies uncertainty (SE, t, bootstrap, jackknife, best-of-N headroom, Deflated Sharpe, RAS/Rademacher for correlated searches, PBO, HAC), estimates transaction costs from your own bars instead of assuming them, refuses to deliver a verdict that hinges on a number it has not measured itself, runs an adversarial contrarian pass, and produces the charts that expose what tables hide. Use whenever a strategy, edge, backtest result, parameter change, sizing decision, or performance claim is on the table.
 ---
 
 # Quant Rigor — analyse before you believe
@@ -167,7 +167,7 @@ Load `references/` files as needed — **start with `routing-table.md`** (questi
 - `07-montecarlo.md` — 45-49: permutation & sign-flip, surrogate paths, White's Reality Check,
   Hansen's SPA, moment stress
 - `08-microstructure-costs.md` — 50-59: spread estimation (Roll, Corwin-Schultz), the cost cliff,
-  slippage decomposition, Rademacher/RAS, half-life, cointegration, Kalman hedge ratio
+  slippage decomposition, half-life, cointegration, Kalman hedge ratio; 68: Rademacher/RAS
 - `backtest-protocol.md` — the full checklist, bias by bias
 - `contrarian-protocol.md` — the attack playbook (run it, don't skim it)
 - `charts.md` — the required plots and what each one is for
